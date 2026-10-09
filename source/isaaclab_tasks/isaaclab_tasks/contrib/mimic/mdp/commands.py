@@ -11,12 +11,10 @@
 from __future__ import annotations
 
 import math
-import os
 from collections.abc import Sequence
 from dataclasses import MISSING
 from typing import TYPE_CHECKING, Literal
 
-import numpy as np
 import torch
 
 from isaaclab.assets import Articulation
@@ -25,7 +23,6 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.configclass import configclass
 from isaaclab.utils.math import (
-    convert_quat,
     quat_apply,
     quat_error_magnitude,
     quat_from_euler_xyz,
@@ -35,76 +32,11 @@ from isaaclab.utils.math import (
     yaw_quat,
 )
 
+from .motion_loader import MotionLibrary
+from .motion_loader import MotionLoader as MotionLoader
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-
-
-class MotionLoader:
-    def __init__(
-        self,
-        motion_file: str,
-        body_indexes: Sequence[int],
-        device: str = "cpu",
-        quaternion_order: Literal["wxyz", "xyzw"] = "wxyz",
-        source_joint_names: Sequence[str] | None = None,
-        target_joint_names: Sequence[str] | None = None,
-    ):
-        """Load motion with runtime quaternions in xyzw order.
-
-        NPZ ``quaternion_order`` metadata takes precedence over the fallback argument.
-        Untagged legacy motion files default to wxyz; untagged xyzw files must opt in.
-        Explicit source/target joint names reorder both joint position and velocity.
-        Omitting both preserves the stored joint column order.
-        """
-        assert os.path.isfile(motion_file), f"Invalid file path: {motion_file}"
-        data = np.load(motion_file, allow_pickle=False)
-        self.fps = float(np.asarray(data["fps"]).reshape(-1)[0])
-        self.joint_pos = torch.tensor(data["joint_pos"], dtype=torch.float32, device=device)
-        self.joint_vel = torch.tensor(data["joint_vel"], dtype=torch.float32, device=device)
-        self._body_pos_w = torch.tensor(data["body_pos_w"], dtype=torch.float32, device=device)
-        self._body_quat_w = torch.tensor(data["body_quat_w"], dtype=torch.float32, device=device)
-        if "quaternion_order" in data:
-            quaternion_order = str(np.asarray(data["quaternion_order"]).item())
-        if quaternion_order == "wxyz":
-            self._body_quat_w: torch.Tensor = convert_quat(self._body_quat_w, to="xyzw")  # type: ignore
-        self._body_lin_vel_w = torch.tensor(data["body_lin_vel_w"], dtype=torch.float32, device=device)
-        self._body_ang_vel_w = torch.tensor(data["body_ang_vel_w"], dtype=torch.float32, device=device)
-        self._body_indexes = body_indexes
-        self.time_step_total = self.joint_pos.shape[0]
-        data.close()
-        if (source_joint_names is None) != (target_joint_names is None):
-            raise ValueError("Both source_joint_names and target_joint_names must be provided together.")
-        if source_joint_names is not None:
-            source_names = list(source_joint_names)
-            target_names = list(target_joint_names)
-            if self.joint_pos.ndim != 2 or self.joint_vel.shape != self.joint_pos.shape:
-                raise ValueError("Motion joint position and velocity must have matching [frames, joints] shapes.")
-            if (
-                len(source_names) != self.joint_pos.shape[1]
-                or len(set(source_names)) != len(source_names)
-                or len(set(target_names)) != len(target_names)
-                or set(source_names) != set(target_names)
-            ):
-                raise ValueError("Motion and robot joint names must uniquely cover the same joint columns.")
-            joint_indexes = torch.tensor([source_names.index(name) for name in target_names], device=device)
-            self.joint_pos = self.joint_pos[:, joint_indexes]
-            self.joint_vel = self.joint_vel[:, joint_indexes]
-
-    @property
-    def body_pos_w(self) -> torch.Tensor:
-        return self._body_pos_w[:, self._body_indexes]
-
-    @property
-    def body_quat_w(self) -> torch.Tensor:
-        return self._body_quat_w[:, self._body_indexes]
-
-    @property
-    def body_lin_vel_w(self) -> torch.Tensor:
-        return self._body_lin_vel_w[:, self._body_indexes]
-
-    @property
-    def body_ang_vel_w(self) -> torch.Tensor:
-        return self._body_ang_vel_w[:, self._body_indexes]
 
 
 class MotionCommand(CommandTerm):
@@ -115,31 +47,22 @@ class MotionCommand(CommandTerm):
 
         self.robot: Articulation = env.scene[cfg.asset_name]
 
-        with np.load(cfg.motion_file, allow_pickle=False) as data:
-            source_joint_names = data["joint_names"].tolist() if "joint_names" in data else self.cfg.motion_joint_names
-            source_body_names = data["body_names"].tolist() if "body_names" in data else None
-            if source_body_names is not None:
-                if len(source_body_names) != data["body_pos_w"].shape[1] or len(set(source_body_names)) != len(
-                    source_body_names
-                ):
-                    raise ValueError("Motion body_names must uniquely label every body column.")
-                if self.cfg.body_names is None:
-                    self.cfg.body_names = source_body_names
-            if self.cfg.body_names is None:
-                raise ValueError("Motion file has no body_names metadata; provide body_names for this legacy file.")
-            if len(set(self.cfg.body_names)) != len(self.cfg.body_names):
-                raise ValueError("Tracked body_names must be unique.")
-            if source_body_names is not None:
-                missing = set(self.cfg.body_names) - set(source_body_names)
-                if missing:
-                    raise ValueError(f"Tracked bodies missing from motion metadata: {sorted(missing)}")
-                motion_body_indexes = [source_body_names.index(name) for name in self.cfg.body_names]
-            else:
-                motion_body_indexes = list(range(len(self.cfg.body_names)))
-        # process joint/body ordering and indexes, then load the motion data
-        stored_body_names = source_body_names if source_body_names is not None else self.cfg.body_names
-        self.motion_body_names = stored_body_names
-        self.motion_root_body_index = stored_body_names.index(self.robot.body_names[0])
+        motion_files = list(cfg.motion_files) if cfg.motion_files else [cfg.motion_file]
+        if any(not isinstance(path, str) or not path for path in motion_files):
+            raise ValueError("Set motion_file or a nonempty motion_files list.")
+        self.motion = MotionLibrary(
+            motion_files,
+            cfg.body_names,
+            self.robot.joint_names,
+            self.device,
+            env.step_dt,
+            cfg.motion_quaternion_order,
+            cfg.motion_joint_names,
+        )
+        self.num_motions = len(motion_files)
+        self.cfg.body_names = self.motion.tracked_body_names
+        self.motion_body_names = self.motion.body_names
+        self.motion_root_body_index = self.motion_body_names.index(self.robot.body_names[0])
         self.joint_indexes = slice(None)
         if self.cfg.joint_names is not None:
             if len(set(self.cfg.joint_names)) != len(self.cfg.joint_names):
@@ -151,16 +74,8 @@ class MotionCommand(CommandTerm):
             self.robot.find_bodies(self.cfg.body_names, preserve_order=True)[0], dtype=torch.long, device=self.device
         )
 
-        self.motion = MotionLoader(
-            self.cfg.motion_file,
-            motion_body_indexes,
-            device=self.device,
-            quaternion_order=self.cfg.motion_quaternion_order,
-            source_joint_names=source_joint_names,
-            target_joint_names=self.robot.joint_names if source_joint_names is not None else None,
-        )
-
         # pre-allocate tensors
+        self.motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.reference_pos_offset = torch.zeros(self.num_envs, 3, device=self.device)
         """Fixed episode reference translation [m], shape [N, 3], excluding environment origins."""
@@ -172,7 +87,14 @@ class MotionCommand(CommandTerm):
         self.body_quat_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 4, device=self.device)
         self.body_quat_relative_w[:, :, 3] = 1.0
 
-        self.bin_count = int(self.motion.time_step_total // (1 / (env.cfg.decimation * env.cfg.sim.dt))) + 1
+        counts = [int((end - start) // (1 / env.step_dt)) + 1 for start, end in self.motion.frame_ranges]
+        self.motion_bin_counts = torch.tensor(counts, dtype=torch.long, device=self.device)
+        self.motion_bin_starts = self.motion_bin_counts.cumsum(0) - self.motion_bin_counts
+        self.bin_ranges = []
+        self.bin_count = 0
+        for count in counts:
+            self.bin_ranges.append((self.bin_count, self.bin_count + count))
+            self.bin_count += count
         # Where episodes *died*, which is what biases the sampler toward the hard parts of the clip.
         self.bin_failed_count = torch.zeros(self.bin_count, dtype=torch.float, device=self.device)
         self._current_bin_failed = torch.zeros(self.bin_count, dtype=torch.float, device=self.device)
@@ -215,6 +137,19 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["assist_scale"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["failure_rate"] = torch.zeros(self.num_envs, device=self.device)
+        for motion_id in range(self.num_motions):
+            self.metrics[f"motion_{motion_id}_fraction"] = torch.zeros(self.num_envs, device=self.device)
+            self.metrics[f"motion_{motion_id}_failure_rate"] = torch.zeros(self.num_envs, device=self.device)
+
+    @property
+    def reference_frame_indices(self) -> torch.Tensor:
+        """Packed reference rows for each environment's motion ID and local frame."""
+        return self.motion.frame_indices(self.motion_ids, self.time_steps)
+
+    @property
+    def motion_lengths(self) -> torch.Tensor:
+        """Number of frames in the clip currently selected by each environment."""
+        return self.motion.lengths[self.motion_ids]
 
     @property
     def bin_failure_rate(self) -> torch.Tensor:
@@ -252,19 +187,20 @@ class MotionCommand(CommandTerm):
     @property
     def joint_pos_robot_order(self) -> torch.Tensor:
         """Full reset joint positions [rad] in articulation order, shape [N, J]."""
-        return self.motion.joint_pos[self.time_steps]
+        return self.motion.joint_pos[self.reference_frame_indices]
 
     @property
     def joint_vel_robot_order(self) -> torch.Tensor:
         """Full reset joint velocities [rad/s] in articulation order, shape [N, J]."""
-        return self.motion.joint_vel[self.time_steps]
+        return self.motion.joint_vel[self.reference_frame_indices]
 
     @property
     def root_pos_w(self) -> torch.Tensor:
         """Reference root positions [m], independent of tracked body order, shape [N, 3]."""
         return (
             quat_apply(
-                self.reference_quat_offset, self.motion._body_pos_w[self.time_steps, self.motion_root_body_index]
+                self.reference_quat_offset,
+                self.motion._body_pos_w[self.reference_frame_indices, self.motion_root_body_index],
             )
             + self.reference_pos_offset
             + self._env.scene.env_origins
@@ -274,21 +210,24 @@ class MotionCommand(CommandTerm):
     def root_quat_w(self) -> torch.Tensor:
         """Reference root orientations in xyzw order, shape [N, 4]."""
         return quat_mul(
-            self.reference_quat_offset, self.motion._body_quat_w[self.time_steps, self.motion_root_body_index]
+            self.reference_quat_offset,
+            self.motion._body_quat_w[self.reference_frame_indices, self.motion_root_body_index],
         )
 
     @property
     def root_lin_vel_w(self) -> torch.Tensor:
         """Reference root linear velocities [m/s], shape [N, 3]."""
         return quat_apply(
-            self.reference_quat_offset, self.motion._body_lin_vel_w[self.time_steps, self.motion_root_body_index]
+            self.reference_quat_offset,
+            self.motion._body_lin_vel_w[self.reference_frame_indices, self.motion_root_body_index],
         )
 
     @property
     def root_ang_vel_w(self) -> torch.Tensor:
         """Reference root angular velocities [rad/s], shape [N, 3]."""
         return quat_apply(
-            self.reference_quat_offset, self.motion._body_ang_vel_w[self.time_steps, self.motion_root_body_index]
+            self.reference_quat_offset,
+            self.motion._body_ang_vel_w[self.reference_frame_indices, self.motion_root_body_index],
         )
 
     def set_reference_frame(
@@ -306,7 +245,7 @@ class MotionCommand(CommandTerm):
         """
         zeros = torch.zeros_like(yaw_offset)
         rotation = quat_from_euler_xyz(zeros, zeros, yaw_offset)
-        pivot = self.motion._body_pos_w[self.time_steps[env_ids], self.motion_root_body_index]
+        pivot = self.motion._body_pos_w[self.reference_frame_indices[env_ids], self.motion_root_body_index]
         translation = pivot - quat_apply(rotation, pivot)
         translation[:, :2] += position_offset
         self.reference_pos_offset[env_ids] = translation
@@ -318,7 +257,7 @@ class MotionCommand(CommandTerm):
         return (
             quat_apply(
                 self.reference_quat_offset[:, None, :].expand(-1, len(self.cfg.body_names), -1),
-                self.motion.body_pos_w[self.time_steps],
+                self.motion.body_pos_w[self.reference_frame_indices],
             )
             + self.reference_pos_offset[:, None, :]
             + self._env.scene.env_origins[:, None, :]
@@ -329,7 +268,7 @@ class MotionCommand(CommandTerm):
         """Episode-aligned reference body orientations in xyzw order, shape [N, B, 4]."""
         return quat_mul(
             self.reference_quat_offset[:, None, :].expand(-1, len(self.cfg.body_names), -1),
-            self.motion.body_quat_w[self.time_steps],
+            self.motion.body_quat_w[self.reference_frame_indices],
         )
 
     @property
@@ -337,7 +276,7 @@ class MotionCommand(CommandTerm):
         """Episode-aligned reference body linear velocities [m/s], shape [N, B, 3]."""
         return quat_apply(
             self.reference_quat_offset[:, None, :].expand(-1, len(self.cfg.body_names), -1),
-            self.motion.body_lin_vel_w[self.time_steps],
+            self.motion.body_lin_vel_w[self.reference_frame_indices],
         )
 
     @property
@@ -345,14 +284,15 @@ class MotionCommand(CommandTerm):
         """Episode-aligned reference body angular velocities [rad/s], shape [N, B, 3]."""
         return quat_apply(
             self.reference_quat_offset[:, None, :].expand(-1, len(self.cfg.body_names), -1),
-            self.motion.body_ang_vel_w[self.time_steps],
+            self.motion.body_ang_vel_w[self.reference_frame_indices],
         )
 
     @property
     def anchor_pos_w(self) -> torch.Tensor:
         return (
             quat_apply(
-                self.reference_quat_offset, self.motion.body_pos_w[self.time_steps, self.motion_anchor_body_index]
+                self.reference_quat_offset,
+                self.motion.body_pos_w[self.reference_frame_indices, self.motion_anchor_body_index],
             )
             + self.reference_pos_offset
             + self._env.scene.env_origins
@@ -361,19 +301,22 @@ class MotionCommand(CommandTerm):
     @property
     def anchor_quat_w(self) -> torch.Tensor:
         return quat_mul(
-            self.reference_quat_offset, self.motion.body_quat_w[self.time_steps, self.motion_anchor_body_index]
+            self.reference_quat_offset,
+            self.motion.body_quat_w[self.reference_frame_indices, self.motion_anchor_body_index],
         )
 
     @property
     def anchor_lin_vel_w(self) -> torch.Tensor:
         return quat_apply(
-            self.reference_quat_offset, self.motion.body_lin_vel_w[self.time_steps, self.motion_anchor_body_index]
+            self.reference_quat_offset,
+            self.motion.body_lin_vel_w[self.reference_frame_indices, self.motion_anchor_body_index],
         )
 
     @property
     def anchor_ang_vel_w(self) -> torch.Tensor:
         return quat_apply(
-            self.reference_quat_offset, self.motion.body_ang_vel_w[self.time_steps, self.motion_anchor_body_index]
+            self.reference_quat_offset,
+            self.motion.body_ang_vel_w[self.reference_frame_indices, self.motion_anchor_body_index],
         )
 
     @property
@@ -419,12 +362,12 @@ class MotionCommand(CommandTerm):
     @property
     def phase(self) -> torch.Tensor:
         """Normalized position in the clip, in [0, 1]: 0 on the first frame, 1 on the last."""
-        return self.time_steps.float() / max(self.motion.time_step_total - 1, 1)
+        return self.time_steps.float() / (self.motion_lengths - 1).clamp(min=1)
 
     @property
     def has_reached_end(self) -> torch.Tensor:
         """True once the reference is sitting on the last frame of the clip, i.e. it has played out."""
-        return self.time_steps >= self.motion.time_step_total - 1
+        return self.time_steps >= self.motion_lengths - 1
 
     @property
     def standing_weight(self) -> torch.Tensor:
@@ -435,7 +378,7 @@ class MotionCommand(CommandTerm):
         boundary so the reward the policy sees does not step. With no ``stance_phase_ranges``
         configured this is 0 everywhere, i.e. the pre-stance-gating behavior.
         """
-        return self.frame_stance_weight[self.time_steps]
+        return self.frame_stance_weight[self.reference_frame_indices]
 
     @property
     def tracking_weight(self) -> torch.Tensor:
@@ -455,29 +398,41 @@ class MotionCommand(CommandTerm):
         in the same place. The hard 0/1 mask is smoothed with a box filter whose width is set by
         ``cfg.stance_blend_time``, which turns each boundary into a linear ramp of that duration.
         """
-        num_frames = self.motion.time_step_total
-        weight = torch.zeros(num_frames, device=self.device)
-        if not self.cfg.stance_phase_ranges:
-            return weight
-
-        frame_phase = torch.arange(num_frames, device=self.device).float() / max(num_frames - 1, 1)
-        for phase_start, phase_end in self.cfg.stance_phase_ranges:
-            weight[(frame_phase >= phase_start) & (frame_phase <= phase_end)] = 1.0
-
-        blend_frames = int(round(self.cfg.stance_blend_time * self.motion.fps))
-        if blend_frames > 0:
-            # a box filter of width 2 * blend_frames + 1 turns every 0 -> 1 edge into a linear ramp
-            # spanning blend_frames on each side of the boundary
-            kernel = torch.ones(1, 1, 2 * blend_frames + 1, device=self.device) / (2 * blend_frames + 1)
-            padded = torch.nn.functional.pad(weight.view(1, 1, -1), (blend_frames, blend_frames), mode="replicate")
-            weight = torch.nn.functional.conv1d(padded, kernel).view(-1)
-        return weight
+        ranges_by_motion = self.cfg.motion_stance_phase_ranges
+        if ranges_by_motion is None:
+            if self.num_motions > 1 and self.cfg.stance_phase_ranges:
+                raise ValueError("Set motion_stance_phase_ranges per clip or clear stance_phase_ranges.")
+            ranges_by_motion = [self.cfg.stance_phase_ranges] * self.num_motions
+        if len(ranges_by_motion) != self.num_motions:
+            raise ValueError("motion_stance_phase_ranges must have one entry per motion.")
+        weights = []
+        for (start, end), ranges in zip(self.motion.frame_ranges, ranges_by_motion):
+            num_frames = end - start
+            weight = torch.zeros(num_frames, device=self.device)
+            phase = torch.arange(num_frames, device=self.device).float() / (num_frames - 1)
+            for lo, hi in ranges:
+                if not 0 <= lo <= hi <= 1:
+                    raise ValueError("Stance phase intervals must satisfy 0 <= start <= end <= 1.")
+                weight[(phase >= lo) & (phase <= hi)] = 1.0
+            blend_frames = int(round(self.cfg.stance_blend_time * self.motion.fps))
+            if ranges and blend_frames > 0:
+                kernel = torch.ones(1, 1, 2 * blend_frames + 1, device=self.device) / (2 * blend_frames + 1)
+                padded = torch.nn.functional.pad(weight.view(1, 1, -1), (blend_frames, blend_frames), mode="replicate")
+                weight = torch.nn.functional.conv1d(padded, kernel).view(-1)
+            weights.append(weight)
+        return torch.cat(weights)
 
     def _update_metrics(self):
         self.metrics["phase"] = self.phase
         self.metrics["standing_weight"] = self.standing_weight
         self.metrics["assist_scale"][:] = self.assist_scale
-        self.metrics["failure_rate"][:] = self.bin_failure_rate.mean()
+        rates = self.bin_failure_rate
+        for motion_id, (start, end) in enumerate(self.bin_ranges):
+            rate = rates[start:end].mean()
+            selected = self.motion_ids == motion_id
+            self.metrics["failure_rate"][selected] = rate
+            self.metrics[f"motion_{motion_id}_fraction"][:] = selected.float()
+            self.metrics[f"motion_{motion_id}_failure_rate"][:] = rate
         self.metrics["error_anchor_pos"] = torch.norm(self.anchor_pos_w - self.robot_anchor_pos_w, dim=-1)
         self.metrics["error_anchor_rot"] = quat_error_magnitude(self.anchor_quat_w, self.robot_anchor_quat_w)
         self.metrics["error_anchor_lin_vel"] = torch.norm(self.anchor_lin_vel_w - self.robot_anchor_lin_vel_w, dim=-1)
@@ -501,68 +456,66 @@ class MotionCommand(CommandTerm):
         self.metrics["error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
 
     def _smooth_bins(self, values: torch.Tensor) -> torch.Tensor:
-        """Blur a per-bin quantity along the clip with the configured non-causal kernel."""
-        padded = torch.nn.functional.pad(
-            values.unsqueeze(0).unsqueeze(0),
-            (0, self.cfg.adaptive_kernel_size - 1),  # Non-causal kernel
-            mode="replicate",
-        )
-        return torch.nn.functional.conv1d(padded, self.kernel.view(1, 1, -1)).view(-1)
+        """Smooth neighboring bins within each clip, never across clip boundaries."""
+        parts = []
+        for start, end in self.bin_ranges:
+            padded = torch.nn.functional.pad(
+                values[start:end].view(1, 1, -1),
+                (0, self.cfg.adaptive_kernel_size - 1),
+                mode="replicate",
+            )
+            parts.append(torch.nn.functional.conv1d(padded, self.kernel.view(1, 1, -1)).view(-1))
+        return torch.cat(parts)
 
-    def _adaptive_sampling(self, env_ids: Sequence[int]):
-        episode_failed = self._env.termination_manager.terminated[env_ids]  # type: ignore
-
-        # Sampler bookkeeping: bin the ending episodes by where the reference stopped.
-        current_bin_index = torch.clamp(
-            (self.time_steps * self.bin_count) // max(self.motion.time_step_total, 1), 0, self.bin_count - 1
-        )
-        self._current_bin_failed[:] = torch.bincount(
-            current_bin_index[env_ids][episode_failed], minlength=self.bin_count
-        )
-
-        # Assist-curriculum bookkeeping: attribute each outcome to the bin that episode started in.
-        # Envs that have not run an episode yet carry no start bin and are skipped, so the very first
-        # reset does not book a batch of phantom successes against bin 0.
+    def _adaptive_sampling(self, env_ids: torch.Tensor):
+        # Attribute completed episodes to their OLD motion before selecting the next.
+        episode_failed = self._env.termination_manager.terminated[env_ids]
+        old_motions = self.motion_ids[env_ids]
+        old_counts = self.motion_bin_counts[old_motions]
+        end_bins = (self.time_steps[env_ids] * old_counts) // self.motion_lengths[env_ids]
+        end_bins = torch.minimum(end_bins, old_counts - 1) + self.motion_bin_starts[old_motions]
         valid = self._start_bin_valid[env_ids]
+        self._current_bin_failed += torch.bincount(end_bins[episode_failed & valid], minlength=self.bin_count)
         finished_start_bins = self.start_bins[env_ids][valid]
-        self._current_start_count[:] = torch.bincount(finished_start_bins, minlength=self.bin_count)
-        self._current_start_failed[:] = torch.bincount(
+        self._current_start_count += torch.bincount(finished_start_bins, minlength=self.bin_count)
+        self._current_start_failed += torch.bincount(
             finished_start_bins[episode_failed[valid]], minlength=self.bin_count
         )
 
-        # Sample
-        sampling_probabilities = self.bin_failed_count + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
-        sampling_probabilities = self._smooth_bins(sampling_probabilities)
+        # Equal probability per clip at reset, independently of its length or difficulty.
+        # Keep the single-clip random-number sequence unchanged.
+        if self.num_motions > 1:
+            self.motion_ids[env_ids] = torch.randint(self.num_motions, (len(env_ids),), device=self.device)
+        probabilities = self._smooth_bins(self.bin_failed_count)
+        assist = self.bin_assist_scale
+        for motion_id, (start, end) in enumerate(self.bin_ranges):
+            selected = env_ids[self.motion_ids[env_ids] == motion_id]
+            if selected.numel() == 0:
+                continue
+            count = end - start
+            probs = probabilities[start:end] + self.cfg.adaptive_uniform_ratio / count
+            probs = probs / probs.sum()
+            sampled_bins = torch.multinomial(probs, len(selected), replacement=True)
+            if self.cfg.start_from_beginning:
+                self.time_steps[selected] = 0
+                start_bins = torch.zeros_like(sampled_bins)
+            else:
+                self.time_steps[selected] = (
+                    (sampled_bins + sample_uniform(0.0, 1.0, (len(selected),), device=self.device))
+                    / count
+                    * (self.motion.lengths[motion_id] - 1)
+                ).long()
+                start_bins = sampled_bins
+            self.start_bins[selected] = start_bins + start
+            self.assist_scale[selected] = assist[start_bins + start]
+            self._start_bin_valid[selected] = True
+            entropy = -(probs * (probs + 1e-12).log()).sum()
+            self.metrics["sampling_entropy"][selected] = entropy / math.log(count) if count > 1 else 0.0
+            pmax, imax = probs.max(dim=0)
+            self.metrics["sampling_top1_prob"][selected] = pmax
+            self.metrics["sampling_top1_bin"][selected] = imax.float() / count
 
-        sampling_probabilities = sampling_probabilities / sampling_probabilities.sum()
-
-        sampled_bins = torch.multinomial(sampling_probabilities, len(env_ids), replacement=True)
-
-        if self.cfg.start_from_beginning:
-            self.time_steps[env_ids] = 0
-        else:
-            self.time_steps[env_ids] = (
-                (sampled_bins + sample_uniform(0.0, 1.0, (len(env_ids),), device=self.device))
-                / self.bin_count
-                * (self.motion.time_step_total - 1)
-            ).long()
-
-        # Freeze the assistive gain for the whole episode at the bin the reference starts in, so the
-        # policy sees a constant amount of help rather than a wrench that fades out underneath it.
-        start_bins = torch.zeros_like(sampled_bins) if self.cfg.start_from_beginning else sampled_bins
-        self.assist_scale[env_ids] = self.bin_assist_scale[start_bins]
-        self.start_bins[env_ids] = start_bins
-        self._start_bin_valid[env_ids] = True
-
-        # Metrics
-        H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
-        H_norm = H / math.log(self.bin_count)
-        pmax, imax = sampling_probabilities.max(dim=0)
-        self.metrics["sampling_entropy"][:] = H_norm
-        self.metrics["sampling_top1_prob"][:] = pmax
-        self.metrics["sampling_top1_bin"][:] = imax.float() / self.bin_count
-
-    def resample_time_steps(self, env_ids: Sequence[int]):
+    def resample_time_steps(self, env_ids: Sequence[int] | slice):
         """Draw the start frame for ``env_ids`` from the adaptive sampler, at most once per reset.
 
         Placing the robot on the reference is a reset *event*'s job (see
@@ -573,7 +526,10 @@ class MotionCommand(CommandTerm):
         therefore safe and idempotent: whichever of the event or :meth:`_resample_command` gets there
         first does the draw, and the other is a no-op.
         """
-        env_ids = torch.as_tensor(env_ids, device=self.device)
+        if isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
+        else:
+            env_ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
         pending = env_ids[self._resample_pending[env_ids]]
         if len(pending) == 0:
             return
@@ -583,7 +539,9 @@ class MotionCommand(CommandTerm):
         self.reference_quat_offset[pending, 3] = 1.0
         self._resample_pending[pending] = False
 
-    def _resample_command(self, env_ids: Sequence[int]):
+    def _resample_command(self, env_ids: Sequence[int] | slice):
+        if isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
         if len(env_ids) == 0:
             return
         # Only draws if no reset event already did, then re-arms for the next reset. The robot's own
@@ -597,7 +555,7 @@ class MotionCommand(CommandTerm):
         # would teleport the robot into a fresh clip segment mid-episode, which is invisible to the
         # termination and reward managers. Register `end_of_reference` or the reference will sit
         # frozen on its final frame until the episode times out.
-        self.time_steps = torch.clamp(self.time_steps + 1, max=self.motion.time_step_total - 1)
+        self.time_steps = torch.minimum(self.time_steps + 1, self.motion_lengths - 1)
 
         anchor_pos_w_repeat = self.anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
         anchor_quat_w_repeat = self.anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
@@ -679,7 +637,23 @@ class MotionCommandCfg(CommandTermCfg):
 
     asset_name: str = MISSING  # type: ignore
 
-    motion_file: str = MISSING  # type: ignore
+    motion_file: str | None = None
+    """Legacy single reference file, used when motion_files is empty."""
+
+    motion_files: list[str] = []
+    """Reference files, sampled uniformly at episode reset. Overrides motion_file.
+
+    Clips must describe the same robot, carry compatible body/joint labels, and
+    match the control frequency. This does not switch motions within an episode.
+    """
+
+    motion_stance_phase_ranges: list[list[tuple[float, float]]] | None = None
+    """Stance intervals for each motion_files entry; [] per clip disables gating.
+
+    None preserves legacy stance_phase_ranges for a single clip. For multiple
+    clips a nonempty global stance_phase_ranges requires explicit per-clip ranges.
+    """
+
     motion_quaternion_order: Literal["wxyz", "xyzw"] = "wxyz"
     """Quaternion order for untagged NPZ files; file metadata overrides this fallback.
 
