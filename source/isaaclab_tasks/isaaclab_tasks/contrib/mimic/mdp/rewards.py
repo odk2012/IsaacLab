@@ -29,12 +29,7 @@ from .utils import get_body_indices
 
 
 def _phase_gate(env: ManagerBasedRLEnv, command_name: str, mode: str) -> torch.Tensor:
-    """Continuous [0, 1] weight for `mode`, driven by where the reference clip currently is.
-
-    mode="tracking": 1 while the reference is playing a real trajectory, ramping to 0 across each
-    stance boundary (see `MotionCommandCfg.stance_phase_ranges` / `stance_blend_time`).
-    mode="standing": the complement, i.e. 1 inside a stance interval.
-    """
+    """Deprecated compatibility gate: tracking is always active, standing is disabled."""
     command: MotionCommand = env.command_manager.get_term(command_name)  # type: ignore
     if mode == "tracking":
         return command.tracking_weight
@@ -46,21 +41,21 @@ def _phase_gate(env: ManagerBasedRLEnv, command_name: str, mode: str) -> torch.T
 def motion_global_anchor_position_error_exp(env: ManagerBasedRLEnv, command_name: str, std: float) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)  # type: ignore
     error = torch.sum(torch.square(command.anchor_pos_w - command.robot_anchor_pos_w), dim=-1)
-    return torch.exp(-error / std**2) * _phase_gate(env, command_name, "tracking")
+    return torch.exp(-error / std**2)
 
 
 def motion_global_anchor_orientation_error_exp(env: ManagerBasedRLEnv, command_name: str, std: float) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)  # type: ignore
     error = quat_error_magnitude(command.anchor_quat_w, command.robot_anchor_quat_w) ** 2
-    return torch.exp(-error / std**2) * _phase_gate(env, command_name, "tracking")
+    return torch.exp(-error / std**2)
 
 
 def motion_global_anchor_tilt_error_l2(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
     """Penalize anchor tilt error relative to the reference throughout the motion.
 
     Compares unit gravity vectors in the reference and robot anchor frames, ignoring
-    world yaw. Unlike the phase-gated exponential orientation reward, this penalty
-    stays active during stance and distinguishes large pre-takeoff tilt errors.
+    world yaw. This penalty stays active throughout the reference and
+    distinguishes large pre-takeoff tilt errors.
     Following a tilted reference incurs no penalty.
 
     Args:
@@ -89,11 +84,11 @@ def motion_global_anchor_linear_velocity_error_exp(
         std: Exponential kernel width [m/s].
 
     Returns:
-        Exponential squared-error reward scaled by the tracking phase weight, shape [N].
+        Exponential squared-error reward throughout the reference, shape [N].
     """
     command: MotionCommand = env.command_manager.get_term(command_name)  # type: ignore
     error = torch.sum(torch.square(command.anchor_lin_vel_w - command.robot_anchor_lin_vel_w), dim=-1)
-    return torch.exp(-error / std**2) * _phase_gate(env, command_name, "tracking")
+    return torch.exp(-error / std**2)
 
 
 def motion_global_anchor_angular_velocity_error_exp(
@@ -107,11 +102,11 @@ def motion_global_anchor_angular_velocity_error_exp(
         std: Exponential kernel width [rad/s].
 
     Returns:
-        Exponential squared-error reward scaled by the tracking phase weight, shape [N].
+        Exponential squared-error reward throughout the reference, shape [N].
     """
     command: MotionCommand = env.command_manager.get_term(command_name)  # type: ignore
     error = torch.sum(torch.square(command.anchor_ang_vel_w - command.robot_anchor_ang_vel_w), dim=-1)
-    return torch.exp(-error / std**2) * _phase_gate(env, command_name, "tracking")
+    return torch.exp(-error / std**2)
 
 
 def motion_relative_body_position_error_exp(
@@ -122,7 +117,7 @@ def motion_relative_body_position_error_exp(
     error = torch.sum(
         torch.square(command.body_pos_relative_w[:, body_indexes] - command.robot_body_pos_w[:, body_indexes]), dim=-1
     )
-    return torch.exp(-error.mean(-1) / std**2) * _phase_gate(env, command_name, "tracking")
+    return torch.exp(-error.mean(-1) / std**2)
 
 
 def motion_relative_body_orientation_error_exp(
@@ -134,7 +129,7 @@ def motion_relative_body_orientation_error_exp(
         quat_error_magnitude(command.body_quat_relative_w[:, body_indexes], command.robot_body_quat_w[:, body_indexes])
         ** 2
     )
-    return torch.exp(-error.mean(-1) / std**2) * _phase_gate(env, command_name, "tracking")
+    return torch.exp(-error.mean(-1) / std**2)
 
 
 def motion_global_body_linear_velocity_error_exp(
@@ -145,7 +140,7 @@ def motion_global_body_linear_velocity_error_exp(
     error = torch.sum(
         torch.square(command.body_lin_vel_w[:, body_indexes] - command.robot_body_lin_vel_w[:, body_indexes]), dim=-1
     )
-    return torch.exp(-error.mean(-1) / std**2) * _phase_gate(env, command_name, "tracking")
+    return torch.exp(-error.mean(-1) / std**2)
 
 
 def motion_global_body_angular_velocity_error_exp(
@@ -156,7 +151,7 @@ def motion_global_body_angular_velocity_error_exp(
     error = torch.sum(
         torch.square(command.body_ang_vel_w[:, body_indexes] - command.robot_body_ang_vel_w[:, body_indexes]), dim=-1
     )
-    return torch.exp(-error.mean(-1) / std**2) * _phase_gate(env, command_name, "tracking")
+    return torch.exp(-error.mean(-1) / std**2)
 
 
 def standing_flat_orientation_l2(

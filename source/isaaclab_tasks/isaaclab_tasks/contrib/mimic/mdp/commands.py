@@ -428,13 +428,7 @@ class MotionCommand(CommandTerm):
 
     @property
     def standing_weight(self) -> torch.Tensor:
-        """Per-env weight in [0, 1] for standing/balance rewards.
-
-        1 while the reference is inside a configured stance interval, 0 while it is tracking a real
-        trajectory, and a linear ramp across ``cfg.stance_blend_time`` seconds on either side of a
-        boundary so the reward the policy sees does not step. With no ``stance_phase_ranges``
-        configured this is 0 everywhere, i.e. the pre-stance-gating behavior.
-        """
+        """Deprecated compatibility weight, always zero; standing rewards are disabled."""
         return self.frame_stance_weight[self.time_steps]
 
     @property
@@ -448,30 +442,16 @@ class MotionCommand(CommandTerm):
         return self.standing_weight > 0.5
 
     def _build_frame_stance_weight(self) -> torch.Tensor:
-        """Precompute the per-frame stance weight from ``cfg.stance_phase_ranges``.
+        """Return zero stance weights; retained for legacy command consumers."""
+        if self.cfg.stance_phase_ranges:
+            import warnings
 
-        The ranges are given in phase units, so they survive a change in clip length (e.g. re-running
-        ``edit_longer_stance.py`` with a different hold) as long as the stance stays proportionally
-        in the same place. The hard 0/1 mask is smoothed with a box filter whose width is set by
-        ``cfg.stance_blend_time``, which turns each boundary into a linear ramp of that duration.
-        """
-        num_frames = self.motion.time_step_total
-        weight = torch.zeros(num_frames, device=self.device)
-        if not self.cfg.stance_phase_ranges:
-            return weight
-
-        frame_phase = torch.arange(num_frames, device=self.device).float() / max(num_frames - 1, 1)
-        for phase_start, phase_end in self.cfg.stance_phase_ranges:
-            weight[(frame_phase >= phase_start) & (frame_phase <= phase_end)] = 1.0
-
-        blend_frames = int(round(self.cfg.stance_blend_time * self.motion.fps))
-        if blend_frames > 0:
-            # a box filter of width 2 * blend_frames + 1 turns every 0 -> 1 edge into a linear ramp
-            # spanning blend_frames on each side of the boundary
-            kernel = torch.ones(1, 1, 2 * blend_frames + 1, device=self.device) / (2 * blend_frames + 1)
-            padded = torch.nn.functional.pad(weight.view(1, 1, -1), (blend_frames, blend_frames), mode="replicate")
-            weight = torch.nn.functional.conv1d(padded, kernel).view(-1)
-        return weight
+            warnings.warn(
+                "stance_phase_ranges is deprecated and ignored; motion tracking is always active.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        return torch.zeros(self.motion.time_step_total, device=self.device)
 
     def _update_metrics(self):
         self.metrics["phase"] = self.phase
@@ -718,16 +698,10 @@ class MotionCommandCfg(CommandTermCfg):
     do most of the work, and it does not overfit to physics that will be taken away."""
 
     stance_phase_ranges: list[tuple[float, float]] = []
-    """Intervals of the clip, in phase units ([0, 1], inclusive on both ends), where the reference is
-    a static stance rather than a trajectory worth tracking.
-
-    Inside these intervals the motion-tracking rewards are gated off and standing/balance rewards are
-    gated on (see :attr:`MotionCommand.standing_weight`). An empty list disables stance gating
-    entirely, which reproduces the pure motion-tracking behavior."""
+    """Deprecated and ignored. All reference frames are tracked, including stationary frames."""
 
     stance_blend_time: float = 0.2
-    """Duration (seconds) of the linear ramp on each side of a stance boundary, so the reward the
-    policy sees transitions smoothly instead of stepping. 0.0 gives hard switches."""
+    """Deprecated compatibility field [s]; no stance blending is performed."""
 
     anchor_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")  # type: ignore
     anchor_visualizer_cfg.markers["frame"].scale = (0.2, 0.2, 0.2)  # type: ignore
