@@ -1,0 +1,69 @@
+{
+  "base": "e1f1d6d2a805d88f37b38ea418462ab5a2766808",
+  "python_version": "3.12.14",
+  "versions": {
+    "mujoco-warp": "3.12.0",
+    "newton": "1.6.0",
+    "numpy": "2.5.1",
+    "mujoco": "3.12.0",
+    "torch": "2.11.0+cu128",
+    "triton": "3.6.0",
+    "warp-lang": "1.17.0",
+    "wandb": "0.26.1",
+    "rsl-rl-lib": "5.5.1"
+  },
+  "motion_relative": "lafan_walk_runs/walk4to10s_2048env_3000updates_20260930-235304-917852/conversion/walk1_subject1_20260930-235305-032443/motion_60fps.npz",
+  "motion_sha256": "e06aa535399f1da1ceeb2fb0b82579d611a0b71240bcdbf4f343a09d8d6fcbb1",
+  "single_files": {
+    "source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/commands.py": {
+      "payload": "payload/single/source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/commands.py",
+      "sha256": "e5b9476c7da612fe25c0b8b5857357d6e9dfec9dba7801ca01f7d23e1e8097c4"
+    },
+    "source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/rewards.py": {
+      "payload": "payload/single/source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/rewards.py",
+      "sha256": "edb97eac6eb444e9b644615903c915b3deeb6802503dd30301b29d50f50677e8"
+    },
+    "source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/events.py": {
+      "payload": "payload/single/source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/events.py",
+      "sha256": "6c8d9bc83001c5f0251997afde82cc4a00a0c1a4de3531ffca1bd9b381a6b5de"
+    },
+    "source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/config/g1_29dof/env_cfg/commands_cfg.py": {
+      "payload": "payload/single/source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/config/g1_29dof/env_cfg/commands_cfg.py",
+      "sha256": "93e417a969e09476d6bacb095c60db622e9f901c524a523629ff116944b76e26"
+    },
+    "source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/config/g1_29dof/env_cfg/reward_cfg.py": {
+      "payload": "payload/single/source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/config/g1_29dof/env_cfg/reward_cfg.py",
+      "sha256": "d803c1244910faec976e42be20f22ae5baac8c45f37e5205dc2b04df88723f1c"
+    }
+  },
+  "multi_files": {
+    "source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/commands.py": {
+      "payload": "payload/multi/source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/commands.py",
+      "sha256": "dd41daddb1b253ceaafd2ba6a05f90429f16a2722fbad1cca471bb3bdfc5888d",
+      "ast_sha256": "3dc6a3f59e7aba094f983aaf4c2e96f332e80f793d2b3f023afcde5ca14f0846"
+    },
+    "source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/events.py": {
+      "payload": "payload/multi/source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/events.py",
+      "sha256": "056dd6080ce8e1dd4b5a146a99e97ba75c2f7f3ee2fb4a8b3e1c2b4b75b082c5",
+      "ast_sha256": "6046781a462579dfb6ac5312399a9233a6de766efb8f72bb239bf959ae65fa42"
+    },
+    "source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/motion_loader.py": {
+      "payload": "payload/multi/source/isaaclab_tasks/isaaclab_tasks/contrib/mimic/mdp/motion_loader.py",
+      "sha256": "d9438fceb911ac477338336c01f2b74e783120aafc3fc399e3383e497b546a29",
+      "ast_sha256": "b6f95d86c1de03e8b06f205f4cc90fb93267267a7f13c79ae6aeedf9b17a57d5"
+    }
+  },
+  "saved_configs": {
+    "env.yaml": "22262ebbebe972773d127c594ff48bc92848103e376f5067ea27b2a592cd9042",
+    "agent.yaml": "5afc8e2a824623bc8c3b02ccddf2ecba3a3662338fcbcddf923658b437aa3ccb"
+  },
+  "allowed_config_differences": [
+    "env.log_dir",
+    "agent.run_name",
+    "agent.experiment_name",
+    "agent.logger (smokes only)",
+    "agent.max_iterations (5 for smoke, 15000 for full as requested; historical run was 30000)",
+    "multi command adds motion_files=[the same walking file] and motion_stance_phase_ranges=[[]]",
+    "worktree path prefix in source/asset paths"
+  ]
+}

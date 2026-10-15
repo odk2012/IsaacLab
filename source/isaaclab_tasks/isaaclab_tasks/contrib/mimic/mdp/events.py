@@ -93,7 +93,7 @@ _DEFAULT_KD_ANG = 5.0
 
 def reset_root_state_from_reference(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor,
+    env_ids: torch.Tensor | slice,
     command_name: str,
     pose_range: dict[str, tuple[float, float]] = {},
     velocity_range: dict[str, tuple[float, float]] = {},
@@ -111,6 +111,8 @@ def reset_root_state_from_reference(
     :meth:`MotionCommand.resample_time_steps`, which draws the episode's start frame if it has not been
     drawn yet, so the robot lands on the frame this episode actually begins at.
     """
+    if isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     command: MotionCommand = env.command_manager.get_term(command_name)  # type: ignore
     command.resample_time_steps(env_ids)
     asset: Articulation = env.scene[asset_cfg.name]
@@ -141,7 +143,7 @@ def reset_root_state_from_reference(
 
 def reset_joint_state_from_reference(
     env: ManagerBasedEnv,
-    env_ids: torch.Tensor,
+    env_ids: torch.Tensor | slice,
     command_name: str,
     position_range: tuple[float, float] = (0.0, 0.0),
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -154,6 +156,8 @@ def reset_joint_state_from_reference(
     See :func:`reset_root_state_from_reference` for why this also calls
     :meth:`MotionCommand.resample_time_steps`.
     """
+    if isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)[env_ids]
     command: MotionCommand = env.command_manager.get_term(command_name)  # type: ignore
     command.resample_time_steps(env_ids)
     asset: Articulation = env.scene[asset_cfg.name]
@@ -183,8 +187,8 @@ class AssistiveWrench(ManagerTermBase):
     a fixed schedule (see ``mimic.mdp.curriculums.assistive_wrench_scale``). ``scale`` multiplies the
     adaptive gain too, so it can be left at 1.0.
 
-    The applied force and torque are also multiplied by the tracking phase weight,
-    smoothly fading to zero during stance without changing the adaptive gain.
+    Assistance follows the existing adaptive gain throughout the reference;
+    it is not gated by stance phases.
 
     Base targets use the command's fixed episode reference frame, including initial
     XY translation and yaw randomization.
@@ -232,22 +236,12 @@ class AssistiveWrench(ManagerTermBase):
     def _precompute_reference_accelerations(self, motion_command) -> None:
         """Forward-difference the reference base velocity buffers into world-frame accelerations.
 
-        Computed once over the whole motion and indexed per env by the command's ``time_steps`` at
-        runtime. The last frame is zeroed because there is no next frame to difference against.
+        Computed per clip and indexed by the command's ``reference_frame_indices`` at
+        runtime. Every clip's final frame is zeroed; clips are never differentiated together.
         """
         self._motion_base_body_id = motion_command.motion_body_names.index(self._base_body_name)
         base = self._motion_base_body_id
-        dt = self._env.step_dt
-        lin_vel = motion_command.motion._body_lin_vel_w[:, base, :]  # (num_frames, 3)
-        ang_vel = motion_command.motion._body_ang_vel_w[:, base, :]
-
-        lin_acc = torch.zeros_like(lin_vel)
-        ang_acc = torch.zeros_like(ang_vel)
-        lin_acc[:-1] = (lin_vel[1:] - lin_vel[:-1]) / dt
-        ang_acc[:-1] = (ang_vel[1:] - ang_vel[:-1]) / dt
-
-        self._ref_lin_acc_w = lin_acc
-        self._ref_ang_acc_w = ang_acc
+        self._ref_lin_acc_w, self._ref_ang_acc_w = motion_command.motion.body_accelerations(base, self._env.step_dt)
 
     def __call__(
         self,
@@ -274,7 +268,7 @@ class AssistiveWrench(ManagerTermBase):
 
         base = self._base_body_id
         motion_base = self._motion_base_body_id
-        frame_idx = motion_command.time_steps  # (N,)
+        frame_idx = motion_command.reference_frame_indices  # Packed rows, shape (N,).
 
         # Share the episode reference frame with tracking rewards and observations.
         rotation = motion_command.reference_quat_offset

@@ -146,8 +146,6 @@ BODY_NAMES = [
 #         asset_name="robot",
 #         resampling_time_range=(1.0e9, 1.0e9),
 #         debug_vis=False,
-#         stance_phase_ranges=[(0.0, 0.344), (0.589, 1.0)],
-#         stance_blend_time=0.2,\
 #         assist_eta=0.8,
 #         assist_beta_max=0.8,
 #         motion_quaternion_order="wxyz",
@@ -169,8 +167,6 @@ class G1CommandsCfg:
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=False,
-        stance_phase_ranges=[(0.0, 0.414), (0.5972, 1.0)],
-        stance_blend_time=0.2,
         assist_eta=0.8,
         assist_beta_max=0.8,
         # Select tracked joints/bodies in policy order; NPZ metadata supplies source ordering.
