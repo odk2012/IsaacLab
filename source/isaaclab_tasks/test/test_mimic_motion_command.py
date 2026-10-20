@@ -10,6 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -29,7 +30,7 @@ class MotionCommandTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.files = []
-        for i, frames in enumerate([120, 240]):
+        for i, frames in enumerate([120, 240, 180, 300]):
             path = Path(self.temp.name) / f"clip{i}.npz"
             quat = np.zeros((frames, 1, 4), dtype=np.float32)
             quat[..., 3] = 1
@@ -76,7 +77,7 @@ class MotionCommandTests(unittest.TestCase):
         )
         values = dict(
             asset_name="robot",
-            motion_files=self.files,
+            motion_files=self.files[:2],
             body_names=["pelvis"],
             anchor_body_name="pelvis",
             debug_vis=False,
@@ -139,10 +140,35 @@ class MotionCommandTests(unittest.TestCase):
             torch.full_like(cmd.assist_scale[cmd.motion_ids == 1], cmd.cfg.assist_beta_max),
         )
 
-    def test_stance_ranges_are_per_clip(self):
-        cmd = self.command(motion_stance_phase_ranges=[[(0, 1)], []], stance_blend_time=0)
-        cmd.motion_ids[1::2] = 1
-        self.assertEqual(cmd.standing_weight[:4].tolist(), [1, 0, 1, 0])
+    def test_legacy_stance_settings_cannot_disable_tracking(self):
+        for ranges in (None, [[(0, 1)], [(0, 1)]]):
+            with self.subTest(ranges=ranges), warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                cmd = self.command(stance_phase_ranges=[(0, 1)], motion_stance_phase_ranges=ranges)
+                cmd.motion_ids[1::2] = 1
+                for frame in (0, 59, 119):
+                    cmd.time_steps[:] = frame
+                    torch.testing.assert_close(cmd.standing_weight, torch.zeros(cmd.num_envs))
+                    torch.testing.assert_close(cmd.tracking_weight, torch.ones(cmd.num_envs))
+                    self.assertFalse(bool(cmd.is_stance.any()))
+
+    def test_four_clips_sample_and_stop_at_their_own_boundaries(self):
+        torch.manual_seed(42)
+        cmd = self.command(motion_files=self.files, motion_stance_phase_ranges=None)
+        cmd.resample_time_steps(slice(None))
+        self.assertEqual(set(cmd.motion_ids.tolist()), {0, 1, 2, 3})
+        torch.testing.assert_close(cmd.joint_pos[:, 0], cmd.motion_ids.float())
+        self.assertTrue(bool((cmd.time_steps < cmd.motion_lengths).all()))
+        # Exercise all four boundaries, including unequal transition-clip lengths.
+        cmd.motion_ids[:] = torch.arange(cmd.num_envs) % 4
+        cmd.time_steps[:] = cmd.motion_lengths - 2
+        cmd._update_command()
+        self.assertEqual(cmd.reference_frame_indices[:4].tolist(), [119, 359, 539, 839])
+        self.assertTrue(bool(cmd.has_reached_end.all()))
+        ids = cmd.motion_ids.clone()
+        cmd._update_command()
+        torch.testing.assert_close(cmd.motion_ids, ids)
+        self.assertEqual(cmd.time_steps[:4].tolist(), [119, 239, 179, 299])
 
     def test_legacy_motion_file_config_still_works(self):
         cmd = self.command(motion_files=[], motion_file=self.files[0], motion_stance_phase_ranges=None)

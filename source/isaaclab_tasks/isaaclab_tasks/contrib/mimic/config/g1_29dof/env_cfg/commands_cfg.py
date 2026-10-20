@@ -8,8 +8,6 @@ from isaaclab.utils.configclass import configclass
 import isaaclab_tasks.contrib.mimic.mdp as mimic_mdp
 from isaaclab_tasks.contrib.mimic import MOTION_TRACKING_DATA_DIR
 
-
-
 # JOINT_NAMES = [
 #     "left_hip_pitch_joint",
 #     "right_hip_pitch_joint",
@@ -146,8 +144,6 @@ BODY_NAMES = [
 #         asset_name="robot",
 #         resampling_time_range=(1.0e9, 1.0e9),
 #         debug_vis=False,
-#         stance_phase_ranges=[(0.0, 0.344), (0.589, 1.0)],
-#         stance_blend_time=0.2,\
 #         assist_eta=0.8,
 #         assist_beta_max=0.8,
 #         motion_quaternion_order="wxyz",
@@ -161,6 +157,7 @@ BODY_NAMES = [
 #         # motion_file=f"{MOTION_TRACKING_DATA_DIR}/motions/npz/leap_wide_g1_retargeted.npz"
 #     )
 
+
 @configclass
 class G1CommandsCfg:
     """Command specifications for the MDP."""
@@ -169,8 +166,6 @@ class G1CommandsCfg:
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=False,
-        stance_phase_ranges=[(0.0, 0.414), (0.5972, 1.0)],
-        stance_blend_time=0.2,
         assist_eta=0.8,
         assist_beta_max=0.8,
         # Select tracked joints/bodies in policy order; NPZ metadata supplies source ordering.

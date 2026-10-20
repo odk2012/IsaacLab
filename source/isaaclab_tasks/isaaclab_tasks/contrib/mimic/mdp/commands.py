@@ -371,13 +371,7 @@ class MotionCommand(CommandTerm):
 
     @property
     def standing_weight(self) -> torch.Tensor:
-        """Per-env weight in [0, 1] for standing/balance rewards.
-
-        1 while the reference is inside a configured stance interval, 0 while it is tracking a real
-        trajectory, and a linear ramp across ``cfg.stance_blend_time`` seconds on either side of a
-        boundary so the reward the policy sees does not step. With no ``stance_phase_ranges``
-        configured this is 0 everywhere, i.e. the pre-stance-gating behavior.
-        """
+        """Deprecated compatibility weight, always zero; standing rewards are disabled."""
         return self.frame_stance_weight[self.reference_frame_indices]
 
     @property
@@ -391,36 +385,17 @@ class MotionCommand(CommandTerm):
         return self.standing_weight > 0.5
 
     def _build_frame_stance_weight(self) -> torch.Tensor:
-        """Precompute the per-frame stance weight from ``cfg.stance_phase_ranges``.
+        """Return zero stance weights for every packed clip; retain legacy consumers."""
+        if self.cfg.stance_phase_ranges or any(self.cfg.motion_stance_phase_ranges or []):
+            import warnings
 
-        The ranges are given in phase units, so they survive a change in clip length (e.g. re-running
-        ``edit_longer_stance.py`` with a different hold) as long as the stance stays proportionally
-        in the same place. The hard 0/1 mask is smoothed with a box filter whose width is set by
-        ``cfg.stance_blend_time``, which turns each boundary into a linear ramp of that duration.
-        """
-        ranges_by_motion = self.cfg.motion_stance_phase_ranges
-        if ranges_by_motion is None:
-            if self.num_motions > 1 and self.cfg.stance_phase_ranges:
-                raise ValueError("Set motion_stance_phase_ranges per clip or clear stance_phase_ranges.")
-            ranges_by_motion = [self.cfg.stance_phase_ranges] * self.num_motions
-        if len(ranges_by_motion) != self.num_motions:
-            raise ValueError("motion_stance_phase_ranges must have one entry per motion.")
-        weights = []
-        for (start, end), ranges in zip(self.motion.frame_ranges, ranges_by_motion):
-            num_frames = end - start
-            weight = torch.zeros(num_frames, device=self.device)
-            phase = torch.arange(num_frames, device=self.device).float() / (num_frames - 1)
-            for lo, hi in ranges:
-                if not 0 <= lo <= hi <= 1:
-                    raise ValueError("Stance phase intervals must satisfy 0 <= start <= end <= 1.")
-                weight[(phase >= lo) & (phase <= hi)] = 1.0
-            blend_frames = int(round(self.cfg.stance_blend_time * self.motion.fps))
-            if ranges and blend_frames > 0:
-                kernel = torch.ones(1, 1, 2 * blend_frames + 1, device=self.device) / (2 * blend_frames + 1)
-                padded = torch.nn.functional.pad(weight.view(1, 1, -1), (blend_frames, blend_frames), mode="replicate")
-                weight = torch.nn.functional.conv1d(padded, kernel).view(-1)
-            weights.append(weight)
-        return torch.cat(weights)
+            warnings.warn(
+                "stance_phase_ranges and motion_stance_phase_ranges are deprecated and ignored;"
+                " motion tracking is always active.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        return torch.zeros(self.motion.time_step_total, device=self.device)
 
     def _update_metrics(self):
         self.metrics["phase"] = self.phase
@@ -648,11 +623,7 @@ class MotionCommandCfg(CommandTermCfg):
     """
 
     motion_stance_phase_ranges: list[list[tuple[float, float]]] | None = None
-    """Stance intervals for each motion_files entry; [] per clip disables gating.
-
-    None preserves legacy stance_phase_ranges for a single clip. For multiple
-    clips a nonempty global stance_phase_ranges requires explicit per-clip ranges.
-    """
+    """Deprecated and ignored. Tracking remains active for every frame of every clip."""
 
     motion_quaternion_order: Literal["wxyz", "xyzw"] = "wxyz"
     """Quaternion order for untagged NPZ files; file metadata overrides this fallback.
@@ -692,16 +663,10 @@ class MotionCommandCfg(CommandTermCfg):
     do most of the work, and it does not overfit to physics that will be taken away."""
 
     stance_phase_ranges: list[tuple[float, float]] = []
-    """Intervals of the clip, in phase units ([0, 1], inclusive on both ends), where the reference is
-    a static stance rather than a trajectory worth tracking.
-
-    Inside these intervals the motion-tracking rewards are gated off and standing/balance rewards are
-    gated on (see :attr:`MotionCommand.standing_weight`). An empty list disables stance gating
-    entirely, which reproduces the pure motion-tracking behavior."""
+    """Deprecated and ignored. Motion tracking remains active throughout the reference."""
 
     stance_blend_time: float = 0.2
-    """Duration (seconds) of the linear ramp on each side of a stance boundary, so the reward the
-    policy sees transitions smoothly instead of stepping. 0.0 gives hard switches."""
+    """Deprecated and ignored; stance-phase reward blending is disabled."""
 
     anchor_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")  # type: ignore
     anchor_visualizer_cfg.markers["frame"].scale = (0.2, 0.2, 0.2)  # type: ignore
