@@ -92,7 +92,7 @@ class G1ContactTargetObservationsCfg:
 
 @configclass
 class G1ContactTargetRewardsCfg(G1RewardsRoughCfg):
-    """The rigid task's rough-terrain rewards without velocity tracking, and the foot contact targets.
+    """The rigid task's rough-terrain rewards without velocity tracking, and one contact target reward per foot.
 
     The gait terms that tell standing from walking read the clip's root velocity (the ``motion`` command).
     """
@@ -101,15 +101,24 @@ class G1ContactTargetRewardsCfg(G1RewardsRoughCfg):
     track_ang_vel_z = None
     track_heading = None
 
-    foot_contact_target = RewTerm(
+    left_foot_contact_target = RewTerm(
         func=mdp.foot_contact_target_exp,
-        weight=3.0,
+        weight=1.5,
         params={
             "command_name": "motion",
+            "foot": 0,
             "std": 0.15,
-            "asset_cfg": SceneEntityCfg(
-                "robot", body_names=["left_ankle_roll_link", "right_ankle_roll_link"], preserve_order=True
-            ),
+            "asset_cfg": SceneEntityCfg("robot", body_names="left_ankle_roll_link"),
+        },
+    )
+    right_foot_contact_target = RewTerm(
+        func=mdp.foot_contact_target_exp,
+        weight=1.5,
+        params={
+            "command_name": "motion",
+            "foot": 1,
+            "std": 0.15,
+            "asset_cfg": SceneEntityCfg("robot", body_names="right_ankle_roll_link"),
         },
     )
 
@@ -164,6 +173,11 @@ class G1ContactTargetEnvCfg(G1RoughEnvCfg):
         self.scene.terrain.max_init_terrain_level = None
         # the clips last 4 to 7.5 s; the clip's end ends the episode first
         self.episode_length_s = 10.0
+
+    def play_mode(self):
+        super().play_mode()
+        # the velocity play mode shrinks the terrain to a random 5x5 grid; keep one column per clip
+        self.scene.terrain.terrain_generator = mdp.motion_terrain_generator(self.commands.motion.motion_files)
 
 
 @configclass

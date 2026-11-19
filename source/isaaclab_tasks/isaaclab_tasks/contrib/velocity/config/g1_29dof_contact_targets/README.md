@@ -34,19 +34,22 @@ than three frames are dropped. On the clips that carry contact labels this agree
 ## Observations
 
 The actor reads the rigid task's proprioception (no height scan) and, in place of the velocity command, the
-`command` group: for the left foot, right foot, left hand, and right hand, the position of the current or next
-contact relative to the root in its yaw frame, whether the clip has it in contact, and the time until that contact
-begins as a fraction of 2 s (1 when no contact is announced within 2 s). The contact target is the mean ankle roll
-link (or hand sphere) position over the contact. The critic reads the same group with the rigid task's critic and
-privileged observations. The left/right mirror swaps the bodies and negates the lateral coordinate.
+`command` group: for the left foot, right foot, left hand, and right hand, the position of its contact target
+relative to the root in its yaw frame, and whether the clip has it in contact (16 values). A contact's target is the
+mean ankle roll link (or hand sphere) position over the contact. A planted foot's target is its contact; when it
+lifts off it keeps that target until the other foot has landed, and then gets its next contact. So while one foot
+swings to its new target, the planted foot keeps its own, and the feet take turns. Hands move to their next
+contact at lift-off. The critic reads the same group with the rigid task's critic and privileged observations. The
+left/right mirror swaps the bodies and negates the lateral coordinate.
 
 ## Rewards
 
 The rigid task's rough-terrain rewards without `track_lin_vel_xy`, `track_ang_vel_z`, and `track_heading`. The
 terms that tell standing from walking (`joint_deviation`, `feet_air_time`, `break_contact`, `no_fly`,
-`contact_impulse`, `standing_foot_motion`) read the clip's root velocity as their command. `foot_contact_target`
-(weight 3) pays, averaged over the feet the clip has in contact, `exp(-|p_foot - p_target|² / 0.15²)` of the robot's
-ankle roll link to the clip's contact position. The curriculum is empty.
+`contact_impulse`, `standing_foot_motion`) read the clip's root velocity as their command.
+`left_foot_contact_target` and `right_foot_contact_target` (weight 1.5 each) pay, while the clip has that foot in
+contact, `exp(-|p_foot - p_target|² / 0.15²)` of that foot's ankle roll link to that foot's own contact target. The
+curriculum is empty.
 
 ## Training
 

@@ -51,33 +51,47 @@ def clean_contacts(contact: np.ndarray, min_frames: int) -> np.ndarray:
     return contact
 
 
-def upcoming_contacts(
-    contact: np.ndarray, positions: np.ndarray, fps: float, horizon: float
-) -> tuple[np.ndarray, np.ndarray]:
-    """Target position and time to contact of the current or next contact, for every frame of one body.
-
-    The target of a contact is the mean body position over it. Frames with no contact left in the clip get the
-    body's own position and the time ``horizon`` [s]; times are capped at ``horizon``.
-    """
-    num = len(contact)
-    target = positions.copy()
-    time = np.full(num, horizon)
-    start = 0
+def contact_segments(contact: np.ndarray) -> list[tuple[int, int]]:
+    """Start and end (exclusive) frames of each contact in a (frames,) boolean array."""
     segments = []
-    while start < num:
+    start = 0
+    while start < len(contact):
         end = start
-        while end < num and contact[end] == contact[start]:
+        while end < len(contact) and contact[end] == contact[start]:
             end += 1
         if contact[start]:
             segments.append((start, end))
         start = end
-    for seg_start, seg_end in reversed(segments):
+    return segments
+
+
+def contact_targets(contact: np.ndarray, positions: np.ndarray, other: np.ndarray | None = None) -> np.ndarray:
+    """Target position of one body for every frame: the contact it is in, else its next contact.
+
+    The target of a contact is the mean body position over it. After lift-off the body keeps that contact as its
+    target until ``other`` (the opposite foot's contact flags) is in contact, so one foot gets its new target only
+    once the other foot has landed; without ``other``, the target moves on at lift-off. After its last contact the
+    body keeps that contact; a body that never touches the terrain gets its own position.
+    """
+    target = positions.copy()
+    segments = contact_segments(contact)
+    if not segments:
+        return target
+    switch = 0
+    for k, (seg_start, seg_end) in enumerate(segments):
         mean = positions[seg_start:seg_end].mean(axis=0)
-        # this contact is the next one for every frame from the end of the previous contact to its own end
-        first = max(0, seg_start - int(horizon * fps))
-        target[first:seg_end] = mean
-        time[first:seg_end] = np.clip((seg_start - np.arange(first, seg_end)) / fps, 0.0, horizon)
-    return target, time
+        target[switch:seg_end] = mean
+        switch = seg_end
+        if other is not None:
+            # hold this contact until the other foot is down (or this foot lands again)
+            limit = segments[k + 1][0] if k + 1 < len(segments) else len(contact)
+            while switch < limit and not other[switch]:
+                switch += 1
+            if switch == len(contact):
+                switch = seg_end  # the other foot never lands again: move on at lift-off
+            target[seg_end:switch] = mean
+    target[switch:] = target[switch - 1]
+    return target
 
 
 class ContactMotionLibrary:
@@ -88,8 +102,9 @@ class ContactMotionLibrary:
     ``contact_margin`` of the terrain and its ankle moves slower than ``contact_speed``, a hand when its sphere is
     within ``contact_margin`` and moves slower than ``contact_speed``. Contacts and gaps shorter than
     ``min_contact_frames`` are dropped. For each frame and :data:`CONTACT_BODIES` entry, the library stores
-    the position of the current or next contact (the foot's ankle roll link, or the hand sphere center), whether
-    the body is in contact, and the time until the contact begins.
+    the position of its contact target (the foot's ankle roll link, or the hand sphere center; see
+    :func:`contact_targets`): a foot keeps its last contact until the other foot lands, then targets its next
+    contact. It also stores whether the body is in contact.
     """
 
     def __init__(
@@ -103,12 +118,11 @@ class ContactMotionLibrary:
         contact_margin: float = 0.01,
         contact_speed: float = 0.3,
         min_contact_frames: int = 3,
-        horizon: float = 2.0,
     ):
         if not motion_files:
             raise ValueError("At least one motion file is required.")
         keys = ("joint_pos", "joint_vel", "root_pos", "root_quat", "root_lin_vel", "root_ang_vel", "body_pos")
-        arrays = {key: [] for key in (*keys, "target", "contact", "time")}
+        arrays = {key: [] for key in (*keys, "target", "contact")}
         lengths = []
         for path in motion_files:
             if not os.path.isfile(path):
@@ -144,20 +158,18 @@ class ContactMotionLibrary:
                 speed = np.linalg.norm(np.gradient(body_pos, axis=0) * fps, axis=-1)
                 touch = np.concatenate((foot_touch, hand_touch), axis=1) & (speed < contact_speed)
                 contact = np.stack([clean_contacts(touch[:, i], min_contact_frames) for i in range(4)], axis=1)
-                targets, times = zip(
-                    *(upcoming_contacts(contact[:, i], body_pos[:, i], fps, horizon) for i in range(4))
-                )
+                # a foot keeps its contact until the other foot lands; hands move on at lift-off
+                others = (contact[:, 1], contact[:, 0], None, None)
+                targets = [contact_targets(contact[:, i], body_pos[:, i], others[i]) for i in range(4)]
                 arrays["body_pos"].append(body_pos)
                 arrays["target"].append(np.stack(targets, axis=1))
                 arrays["contact"].append(contact)
-                arrays["time"].append(np.stack(times, axis=1))
                 lengths.append(frames)
 
         def pack(key: str, dtype=torch.float32) -> torch.Tensor:
             return torch.tensor(np.concatenate(arrays[key]), dtype=dtype, device=device)
 
         self.fps = fps
-        self.horizon = horizon
         self.joint_pos = pack("joint_pos")
         """Joint positions [rad] in articulation order. Shape is (frames, joints)."""
         self.joint_vel = pack("joint_vel")
@@ -176,8 +188,6 @@ class ContactMotionLibrary:
         """Position [m] of each contact body's current or next contact, in the clip frame. Shape is (frames, 4, 3)."""
         self.in_contact = pack("contact", torch.bool)
         """Whether each contact body is in contact. Shape is (frames, 4)."""
-        self.time_to_contact = pack("time")
-        """Time [s] until each body's next contact begins, 0 in contact, capped at the horizon. Shape (frames, 4)."""
         self.lengths = torch.tensor(lengths, dtype=torch.long, device=device)
         self.starts = self.lengths.cumsum(0) - self.lengths
 

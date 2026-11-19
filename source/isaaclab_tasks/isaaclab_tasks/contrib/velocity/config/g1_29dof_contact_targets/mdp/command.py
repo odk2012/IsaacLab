@@ -50,7 +50,6 @@ class MotionContactCommand(CommandTerm):
             cfg.contact_margin,
             cfg.contact_speed,
             cfg.min_contact_frames,
-            cfg.horizon,
         )
         self.num_motions = len(cfg.motion_files)
         terrain = env.scene.terrain
@@ -90,18 +89,13 @@ class MotionContactCommand(CommandTerm):
 
     @property
     def contact_target_w(self) -> torch.Tensor:
-        """World position [m] of each contact body's current or next contact. Shape (num_envs, 4, 3)."""
+        """World position [m] of each contact body's contact target. Shape is (num_envs, 4, 3)."""
         return self.motion.contact_target[self.frames] + self._env.scene.env_origins[:, None, :]
 
     @property
     def in_contact(self) -> torch.Tensor:
         """Whether each contact body is in contact in the clip. Shape (num_envs, 4)."""
         return self.motion.in_contact[self.frames]
-
-    @property
-    def time_to_contact(self) -> torch.Tensor:
-        """Time [s] until each contact body's next contact, 0 in contact. Shape (num_envs, 4)."""
-        return self.motion.time_to_contact[self.frames]
 
     """
     Episode sampling (from the reset event)
@@ -229,9 +223,6 @@ class MotionContactCommandCfg(CommandTermCfg):
 
     min_contact_frames: int = 3
     """Shortest contact and gap [frames] kept when measuring the clip's contacts."""
-
-    horizon: float = 2.0
-    """Furthest time [s] ahead a next contact is announced; also the cap of the time to contact."""
 
     target_visualizer_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/Command/contact_targets",

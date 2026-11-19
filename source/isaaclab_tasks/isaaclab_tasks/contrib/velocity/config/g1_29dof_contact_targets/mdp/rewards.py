@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Reward for placing the feet on the clip's contact positions."""
+"""Rewards for placing each foot on its own contact position in the clip."""
 
 from __future__ import annotations
 
@@ -20,15 +20,15 @@ if TYPE_CHECKING:
 
 
 def foot_contact_target_exp(
-    env: ManagerBasedRLEnv, command_name: str, std: float, asset_cfg: SceneEntityCfg
+    env: ManagerBasedRLEnv, command_name: str, foot: int, std: float, asset_cfg: SceneEntityCfg
 ) -> torch.Tensor:
-    """Mean over the feet in contact in the clip of ``exp(-|p_foot - p_target|^2 / std^2)``.
+    """``exp(-|p_foot - p_target|^2 / std^2)`` of one foot while the clip has that foot in contact, else zero.
 
-    ``p_target`` is the clip's foot contact position (the ankle roll link, averaged over the contact) and
-    ``asset_cfg`` selects the robot's left and right feet in that order. Zero while the clip has no foot in contact.
+    ``foot`` is 0 (left) or 1 (right) and ``asset_cfg`` selects that robot foot's body. ``p_target`` is that foot's
+    contact position in the clip (its ankle roll link, averaged over the contact), so each foot is scored only
+    against its own contact.
     """
     command: MotionContactCommand = env.command_manager.get_term(command_name)
-    feet = command.robot.data.body_pos_w.torch[:, asset_cfg.body_ids]
-    error = (feet - command.contact_target_w[:, :2]).square().sum(dim=-1)
-    stance = command.in_contact[:, :2].float()
-    return (torch.exp(-error / std**2) * stance).sum(dim=-1) / stance.sum(dim=-1).clamp_min(1.0)
+    position = command.robot.data.body_pos_w.torch[:, asset_cfg.body_ids[0]]
+    error = (position - command.contact_target_w[:, foot]).square().sum(dim=-1)
+    return torch.exp(-error / std**2) * command.in_contact[:, foot].float()
