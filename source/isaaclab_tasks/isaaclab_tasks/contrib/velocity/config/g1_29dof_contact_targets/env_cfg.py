@@ -45,6 +45,7 @@ TEST_MOTION_FILES = [STAIR_MOTION_FILES[3], WALK_MOTION_FILES[2]]
 
 TRAIN_STAIR_FILES = [path for path in STAIR_MOTION_FILES if path not in TEST_MOTION_FILES]
 TRAIN_WALK_FILES = [path for path in WALK_MOTION_FILES if path not in TEST_MOTION_FILES]
+TEST_WALK_FILES = [path for path in WALK_MOTION_FILES if path in TEST_MOTION_FILES]
 
 MOTION_FILES = TRAIN_STAIR_FILES + TRAIN_WALK_FILES
 """Training clips: three pyramid stair clips (approached from three sides), then four walking clips; terrain column
@@ -169,7 +170,7 @@ class G1ContactTargetEnvCfg(G1RoughEnvCfg):
         self.events.reset_base.params = {"command_name": "motion", "joint_position_range": (-0.05, 0.05)}
         self.events.reset_robot_joints = None
         # one terrain column per clip; the command moves each robot onto its clip's column at reset
-        self.scene.terrain.terrain_generator = mdp.motion_terrain_generator(MOTION_FILES)
+        self.scene.terrain.terrain_generator = mdp.motion_terrain_generator(self.commands.motion.motion_files)
         self.scene.terrain.max_init_terrain_level = None
         # the clips last 4 to 7.5 s; the clip's end ends the episode first
         self.episode_length_s = 10.0
@@ -187,11 +188,36 @@ class G1ContactTargetEnvCfg_PLAY(G1ContactTargetEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 18
-        self.commands.motion.motion_files = TEST_MOTION_FILES
+        _configure_play(self, TEST_MOTION_FILES)
+
+
+def _configure_play(cfg: G1ContactTargetEnvCfg, motion_files: list[str]):
+    """Play ``motion_files`` from their first frame, without pushes or observation noise."""
+    cfg.scene.num_envs = 18
+    cfg.commands.motion.motion_files = motion_files
+    cfg.commands.motion.motion_weights = None
+    cfg.scene.terrain.terrain_generator = mdp.motion_terrain_generator(motion_files)
+    cfg.commands.motion.random_start = False
+    cfg.observations.policy.enable_corruption = False
+    cfg.events.push_robot = None
+    cfg.sim.visualizer_cfgs = [NewtonGLVisualizerCfg(eye=(-6.0, -6.0, 4.0), lookat=(0.0, 0.0, 0.5))]
+    cfg.video_recorders = []
+
+
+@configclass
+class G1ContactTargetWalkEnvCfg(G1ContactTargetEnvCfg):
+    """The same task on the walking clips only (:data:`TRAIN_WALK_FILES`, drawn uniformly), without stairs."""
+
+    def __post_init__(self):
+        self.commands.motion.motion_files = TRAIN_WALK_FILES
         self.commands.motion.motion_weights = None
-        self.scene.terrain.terrain_generator = mdp.motion_terrain_generator(TEST_MOTION_FILES)
-        self.commands.motion.random_start = False
-        self.observations.policy.enable_corruption = False
-        self.events.push_robot = None
-        self.sim.visualizer_cfgs = [NewtonGLVisualizerCfg(eye=(-6.0, -6.0, 4.0), lookat=(0.0, 0.0, 0.5))]
-        self.video_recorders = []
+        super().__post_init__()
+
+
+@configclass
+class G1ContactTargetWalkEnvCfg_PLAY(G1ContactTargetWalkEnvCfg):
+    """The held-out walking clip (:data:`TEST_WALK_FILES`) from its first frame."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _configure_play(self, TEST_WALK_FILES)

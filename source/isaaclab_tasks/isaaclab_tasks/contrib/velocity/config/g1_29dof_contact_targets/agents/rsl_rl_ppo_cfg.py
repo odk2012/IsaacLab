@@ -14,3 +14,11 @@ class G1ContactTargetPPORunnerCfg(G1RoughPPORunnerCfg):
 
     wandb_project = "g1_29dof_rigid_contact_targets_ppo"
     experiment_name = "g1_29dof_rigid_contact_targets_ppo"
+
+
+@configclass
+class G1ContactTargetWalkPPORunnerCfg(G1ContactTargetPPORunnerCfg):
+    """The same runner for the walking-only task, logged to its own project."""
+
+    wandb_project = "g1_29dof_rigid_contact_targets_walk_ppo"
+    experiment_name = "g1_29dof_rigid_contact_targets_walk_ppo"

@@ -18,6 +18,10 @@ Nine clips. Seven train, drawn per episode with stairs and walking in equal shar
 | `kimodo_ramp_seed47` | Walk up the ramp with a different gait (more, shorter steps) | Test |
 | `kimodo_platform_seed44`, `_seed45` | Walk onto a 0.15 m platform, 4 s | Train |
 
+`IsaacContrib-Velocity-G1-29dof-Rigid-ContactTargets-Walk` (and `-Walk-Play`) is the same task on the walking clips
+only: the four training walking clips drawn uniformly, and `kimodo_ramp_seed47` alone in `-Walk-Play`. Its runs log
+to `g1_29dof_rigid_contact_targets_walk_ppo`.
+
 The terrain has one column per clip, holding that clip's boxes; at reset each robot moves onto its clip's column
 and starts on the clip's pose at a random frame (the first frame in `-Play`), with ±0.05 rad joint noise. The clip
 then advances one frame per step, and the episode ends at the clip's last frame, at a fall, or when the root is
@@ -58,4 +62,5 @@ uv run --with wandb isaaclab train --rl_library rsl_rl \
     --task IsaacContrib-Velocity-G1-29dof-Rigid-ContactTargets --num_envs 4096 --headless
 ```
 
-Runs log to `g1_29dof_rigid_contact_targets_ppo`.
+Runs log to `g1_29dof_rigid_contact_targets_ppo`. For the walking-only task, pass
+`--task IsaacContrib-Velocity-G1-29dof-Rigid-ContactTargets-Walk`.
