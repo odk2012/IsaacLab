@@ -65,13 +65,13 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         }
         self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
 
-        self.sim.visualizer_cfgs = [
-            NewtonGLVisualizerCfg(eye=(12.0, 0.0, 6.0), headless=False),
-            # NewtonRTXVisualizerCfg(eye=(12.0, 0.0, 6.0), headless=True),
-            # KitVisualizerCfg(eye=(12.0, 0.0, 6.0), headless=True),
-        ]
+        # self.sim.visualizer_cfgs = [
+        #     NewtonGLVisualizerCfg(eye=(12.0, 0.0, 6.0), headless=False),
+        #     # NewtonRTXVisualizerCfg(eye=(12.0, 0.0, 6.0), headless=True),
+        #     # KitVisualizerCfg(eye=(12.0, 0.0, 6.0), headless=True),
+        # ]
 
-        # self.sim.visualizer_cfgs = []
+        self.sim.visualizer_cfgs = []
 
         self.video_recorders = [
             VideoRecorderCfg(
