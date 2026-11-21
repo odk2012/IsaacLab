@@ -26,9 +26,9 @@ def foot_contact_target_exp(
 
     ``foot`` is 0 (left) or 1 (right) and ``asset_cfg`` selects that robot foot's body. ``p_target`` is that foot's
     contact position in the clip (its ankle roll link, averaged over the contact), so each foot is scored only
-    against its own contact.
+    against its own contact. Zero while the clip waits for the robot's feet, so stalling the clip does not pay.
     """
     command: MotionContactCommand = env.command_manager.get_term(command_name)
     position = command.robot.data.body_pos_w.torch[:, asset_cfg.body_ids[0]]
     error = (position - command.contact_target_w[:, foot]).square().sum(dim=-1)
-    return torch.exp(-error / std**2) * command.in_contact[:, foot].float()
+    return torch.exp(-error / std**2) * (command.in_contact[:, foot] & ~command.waiting).float()

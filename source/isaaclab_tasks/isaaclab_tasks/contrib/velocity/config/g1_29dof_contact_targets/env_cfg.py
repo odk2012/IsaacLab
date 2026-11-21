@@ -65,6 +65,9 @@ class G1ContactTargetCommandsCfg:
         motion_files=MOTION_FILES,
         motion_weights=MOTION_WEIGHTS,
         debug_vis=True,
+        # the clip waits (up to 1 s per touchdown) for the robot's feet to reach their contacts
+        wait_for_contact=True,
+        max_wait_s=1.0,
     )
 
 
@@ -172,8 +175,8 @@ class G1ContactTargetEnvCfg(G1RoughEnvCfg):
         # one terrain column per clip; the command moves each robot onto its clip's column at reset
         self.scene.terrain.terrain_generator = mdp.motion_terrain_generator(self.commands.motion.motion_files)
         self.scene.terrain.max_init_terrain_level = None
-        # the clips last 4 to 7.5 s; the clip's end ends the episode first
-        self.episode_length_s = 10.0
+        # the clips last 4 to 7.5 s, longer with the waits; the clip's end usually ends the episode first
+        self.episode_length_s = 20.0
 
     def play_mode(self):
         super().play_mode()
@@ -192,12 +195,15 @@ class G1ContactTargetEnvCfg_PLAY(G1ContactTargetEnvCfg):
 
 
 def _configure_play(cfg: G1ContactTargetEnvCfg, motion_files: list[str]):
-    """Play ``motion_files`` from their first frame, without pushes or observation noise."""
+    """Play ``motion_files`` from their first frame at the robot's pace, without pushes or observation noise."""
     cfg.scene.num_envs = 18
     cfg.commands.motion.motion_files = motion_files
     cfg.commands.motion.motion_weights = None
     cfg.scene.terrain.terrain_generator = mdp.motion_terrain_generator(motion_files)
     cfg.commands.motion.random_start = False
+    # the clip waits as long as it takes for the robot's feet to reach their contacts
+    cfg.commands.motion.max_wait_s = None
+    cfg.episode_length_s = 30.0
     cfg.observations.policy.enable_corruption = False
     cfg.events.push_robot = None
     cfg.sim.visualizer_cfgs = [NewtonGLVisualizerCfg(eye=(-6.0, -6.0, 4.0), lookat=(0.0, 0.0, 0.5))]

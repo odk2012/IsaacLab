@@ -122,7 +122,7 @@ class ContactMotionLibrary:
         if not motion_files:
             raise ValueError("At least one motion file is required.")
         keys = ("joint_pos", "joint_vel", "root_pos", "root_quat", "root_lin_vel", "root_ang_vel", "body_pos")
-        arrays = {key: [] for key in (*keys, "target", "contact")}
+        arrays = {key: [] for key in (*keys, "target", "contact", "touchdown", "next_touchdown")}
         lengths = []
         for path in motion_files:
             if not os.path.isfile(path):
@@ -164,6 +164,16 @@ class ContactMotionLibrary:
                 arrays["body_pos"].append(body_pos)
                 arrays["target"].append(np.stack(targets, axis=1))
                 arrays["contact"].append(contact)
+                # touchdowns (a contact starting after the first frame), and each frame's next one (-1 when none)
+                touchdown = np.zeros_like(contact)
+                touchdown[1:] = contact[1:] & ~contact[:-1]
+                next_touchdown = np.full(contact.shape, -1, dtype=np.int64)
+                upcoming = np.full(4, -1, dtype=np.int64)
+                for frame in range(frames - 1, -1, -1):
+                    next_touchdown[frame] = upcoming
+                    upcoming = np.where(touchdown[frame], frame, upcoming)
+                arrays["touchdown"].append(touchdown)
+                arrays["next_touchdown"].append(next_touchdown)
                 lengths.append(frames)
 
         def pack(key: str, dtype=torch.float32) -> torch.Tensor:
@@ -188,6 +198,10 @@ class ContactMotionLibrary:
         """Position [m] of each contact body's current or next contact, in the clip frame. Shape is (frames, 4, 3)."""
         self.in_contact = pack("contact", torch.bool)
         """Whether each contact body is in contact. Shape is (frames, 4)."""
+        self.touchdown = pack("touchdown", torch.bool)
+        """Whether each contact body's contact starts at this frame (not a clip's first frame). Shape (frames, 4)."""
+        self.next_touchdown = pack("next_touchdown", torch.long)
+        """Clip-local frame of each contact body's next touchdown after this frame, -1 when none. Shape (frames, 4)."""
         self.lengths = torch.tensor(lengths, dtype=torch.long, device=device)
         self.starts = self.lengths.cumsum(0) - self.lengths
 

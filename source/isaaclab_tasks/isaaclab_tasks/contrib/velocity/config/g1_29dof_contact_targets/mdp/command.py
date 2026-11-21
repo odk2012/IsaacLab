@@ -60,7 +60,12 @@ class MotionContactCommand(CommandTerm):
         self.motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._command = torch.zeros(self.num_envs, 3, device=self.device)
-        for name in ("foot_target_error", "clip_progress", "root_error"):
+        self._wait_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._lifted = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)
+        self._air_steps = torch.zeros(self.num_envs, 2, dtype=torch.long, device=self.device)
+        self.waiting = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        """Whether the clip waits for the robot's feet this step. Shape is (num_envs,)."""
+        for name in ("foot_target_error", "clip_progress", "root_error", "clip_wait"):
             self.metrics[name] = torch.zeros(self.num_envs, device=self.device)
 
     def __str__(self) -> str:
@@ -116,6 +121,10 @@ class MotionContactCommand(CommandTerm):
             start = torch.zeros_like(motion_ids)
         self.motion_ids[env_ids] = motion_ids
         self.time_steps[env_ids] = start
+        self._wait_steps[env_ids] = 0
+        self._lifted[env_ids] = False
+        self._air_steps[env_ids] = 0
+        self.waiting[env_ids] = False
         terrain = self._env.scene.terrain
         terrain.terrain_levels[env_ids] = 0
         terrain.terrain_types[env_ids] = motion_ids
@@ -166,8 +175,53 @@ class MotionContactCommand(CommandTerm):
 
     def _update_command(self):
         last = self.motion.lengths[self.motion_ids] - 1
-        self.time_steps = torch.minimum(self.time_steps + 1, last)
+        following = torch.minimum(self.time_steps + 1, last)
+        if self.cfg.wait_for_contact:
+            following = self._paced_time_steps(following)
+        self.time_steps = following
         self._compute_command()
+
+    def _paced_time_steps(self, following: torch.Tensor) -> torch.Tensor:
+        """Advance the clip at the robot's pace (see :attr:`MotionContactCommandCfg.wait_for_contact`)."""
+        motion = self.motion
+        starts = motion.starts[self.motion_ids]
+        origins = self._env.scene.env_origins[:, None, :]
+        feet = self.robot.data.body_pos_w.torch[:, self._foot_ids]
+        sensor = self._env.scene.sensors[self.cfg.contact_sensor_name]
+        if not hasattr(self, "_sensor_foot_ids"):
+            self._sensor_foot_ids = sensor.find_bodies(self.cfg.foot_body_names, preserve_order=True)[0]
+        down = sensor.data.net_forces_w.torch[:, self._sensor_foot_ids].norm(dim=-1) > self.cfg.contact_force_threshold
+
+        def reached(frames: torch.Tensor) -> torch.Tensor:
+            target = motion.contact_target[frames, :2] + origins
+            return down & ((feet - target).norm(dim=-1) < self.cfg.reach_radius)
+
+        # wait: the clip does not plant a foot until the robot's foot is down on that contact
+        touchdown = motion.touchdown[starts + following, :2]
+        wait = (touchdown & ~reached(starts + following)).any(dim=-1)
+        if self.cfg.max_wait_s is not None:
+            wait &= self._wait_steps < round(self.cfg.max_wait_s / self._env.step_dt)
+        self._wait_steps = torch.where(wait, self._wait_steps + 1, 0)
+        self.waiting[:] = wait
+        paced = torch.where(wait, self.time_steps, following)
+        # move up: a swinging foot that is down on its next contact jumps the clip to that touchdown
+        frames = self.frames
+        upcoming = motion.next_touchdown[frames, :2]
+        upcoming_frames = starts[:, None] + upcoming.clamp_min(0)
+        targeting = (
+            motion.contact_target[frames, :2]
+            - motion.contact_target[upcoming_frames, torch.arange(2, device=self.device)]
+        ).norm(dim=-1) < 1.0e-6
+        # only a new touchdown counts: since the clip foot lifted off, the robot foot has been off the ground for
+        # min_air_s (so the drop after a reset and bounces do not count)
+        swinging = ~motion.in_contact[frames, :2]
+        self._air_steps = torch.where(down, 0, self._air_steps + 1)
+        lifted_now = self._air_steps >= round(self.cfg.min_air_s / self._env.step_dt)
+        self._lifted = swinging & (self._lifted | lifted_now)
+        early = (upcoming >= 0) & swinging & targeting & self._lifted & reached(frames)
+        jump = torch.where(early, upcoming, torch.full_like(upcoming, torch.iinfo(torch.long).max)).amin(dim=-1)
+        self.metrics["clip_wait"][:] = wait.float()
+        return torch.where(early.any(dim=-1), torch.maximum(jump, paced), paced)
 
     @property
     def _foot_ids(self) -> list[int]:
@@ -223,6 +277,30 @@ class MotionContactCommandCfg(CommandTermCfg):
 
     min_contact_frames: int = 3
     """Shortest contact and gap [frames] kept when measuring the clip's contacts."""
+
+    wait_for_contact: bool = False
+    """Advance the clip at the robot's pace instead of one frame per step.
+
+    The clip does not plant a foot (so the other foot gets no new target) until the robot's foot is down within
+    :attr:`reach_radius` of that contact; and when the robot lifts a foot the clip swings (for at least
+    :attr:`min_air_s`) and puts it down within :attr:`reach_radius` of its next contact early, the clip jumps to that
+    touchdown.
+    """
+
+    max_wait_s: float | None = None
+    """Longest time [s] the clip waits for one touchdown before it plays on regardless; None waits indefinitely."""
+
+    min_air_s: float = 0.1
+    """Shortest time [s] a robot foot must be off the ground for its next touchdown to move the clip up."""
+
+    reach_radius: float = 0.15
+    """Distance [m] from a contact target within which a robot foot that is down has reached it."""
+
+    contact_sensor_name: str = "contact_forces"
+    """Contact sensor telling whether the robot's feet are down (used with :attr:`wait_for_contact`)."""
+
+    contact_force_threshold: float = 5.0
+    """Net foot force [N] above which a robot foot is down."""
 
     target_visualizer_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/Command/contact_targets",

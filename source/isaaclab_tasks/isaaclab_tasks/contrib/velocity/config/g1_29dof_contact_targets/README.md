@@ -24,8 +24,13 @@ to `g1_29dof_rigid_contact_targets_walk_ppo`.
 
 The terrain has one column per clip, holding that clip's boxes; at reset each robot moves onto its clip's column
 and starts on the clip's pose at a random frame (the first frame in `-Play`), with ±0.05 rad joint noise. The clip
-then advances one frame per step, and the episode ends at the clip's last frame, at a fall, or when the root is
-1 m from the clip's root.
+then plays at the robot's pace (`wait_for_contact`). It does not plant a foot, and so does not give the other foot
+its next target, until the robot's foot is down (contact force above 5 N) within 0.15 m of that contact. When the
+robot lifts a foot the clip swings (for at least 0.1 s, so the drop after a reset and bounces do not count) and puts
+it down within 0.15 m of its next contact early, the clip jumps to that touchdown. In training the clip waits at
+most 1 s per touchdown (`max_wait_s`) and then plays on; in `-Play` and `-Walk-Play` it waits indefinitely. The
+`clip_wait` metric is 1 while the clip waits. The episode ends at the clip's last frame, at a fall, when the root is
+1 m from the clip's root, or after 20 s (30 s in Play).
 
 ## Contacts
 
@@ -52,7 +57,7 @@ The rigid task's rough-terrain rewards without `track_lin_vel_xy`, `track_ang_ve
 terms that tell standing from walking (`joint_deviation`, `feet_air_time`, `break_contact`, `no_fly`,
 `contact_impulse`, `standing_foot_motion`) read the clip's root velocity as their command.
 `left_foot_contact_target` and `right_foot_contact_target` (weight 1.5 each) pay, while the clip has that foot in
-contact, `exp(-|p_foot - p_target|² / 0.15²)` of that foot's ankle roll link to that foot's own contact target. The
+contact and is not waiting, `exp(-|p_foot - p_target|² / 0.15²)` of that foot's ankle roll link to that foot's own contact target. The
 curriculum is empty.
 
 ## Training
