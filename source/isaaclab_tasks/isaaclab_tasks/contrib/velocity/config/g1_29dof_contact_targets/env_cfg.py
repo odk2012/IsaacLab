@@ -107,6 +107,8 @@ class G1ContactTargetRewardsCfg(G1RewardsRoughCfg):
     track_lin_vel_xy = None
     track_ang_vel_z = None
     track_heading = None
+    foot_clearance = None
+
 
     left_foot_contact_target = RewTerm(
         func=mdp.foot_contact_target_exp,
