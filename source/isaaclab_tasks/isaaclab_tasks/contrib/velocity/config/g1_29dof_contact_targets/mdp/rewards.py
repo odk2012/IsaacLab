@@ -22,11 +22,12 @@ if TYPE_CHECKING:
 def foot_contact_target_exp(
     env: ManagerBasedRLEnv, command_name: str, foot: int, std: float, asset_cfg: SceneEntityCfg
 ) -> torch.Tensor:
-    """``exp(-|p_foot - p_target|^2 / std^2)`` of one foot while the clip has that foot in contact, else zero.
+    """``exp(-|p_foot - p_target|^2 / std^2)`` of one foot while it holds its target, else zero.
 
-    ``foot`` is 0 (left) or 1 (right) and ``asset_cfg`` selects that robot foot's body. ``p_target`` is that foot's
-    contact position in the clip (its ankle roll link, averaged over the contact), so each foot is scored only
-    against its own contact. Zero while the clip waits for the robot's feet, so stalling the clip does not pay.
+    ``foot`` is 0 (left) or 1 (right) and ``asset_cfg`` selects that robot foot's body. A foot holds its target
+    (its last footstep, or its starting position) while the other foot steps, so each foot is paid only for
+    staying on its own placed footstep; the stepping foot earns it once its footstep lands. Zero while the clip
+    waits for the robot's feet, so stalling the clip does not pay.
     """
     command: MotionContactCommand = env.command_manager.get_term(command_name)
     position = command.robot.data.body_pos_w.torch[:, asset_cfg.body_ids[0]]

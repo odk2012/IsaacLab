@@ -65,33 +65,78 @@ def contact_segments(contact: np.ndarray) -> list[tuple[int, int]]:
     return segments
 
 
-def contact_targets(contact: np.ndarray, positions: np.ndarray, other: np.ndarray | None = None) -> np.ndarray:
-    """Target position of one body for every frame: the contact it is in, else its next contact.
+def contact_targets(contact: np.ndarray, positions: np.ndarray) -> np.ndarray:
+    """Target of one hand for every frame: the contact it is in, else its next contact (mean position over it).
 
-    The target of a contact is the mean body position over it. After lift-off the body keeps that contact as its
-    target until ``other`` (the opposite foot's contact flags) is in contact, so one foot gets its new target only
-    once the other foot has landed; without ``other``, the target moves on at lift-off. After its last contact the
-    body keeps that contact; a body that never touches the terrain gets its own position.
+    After its last contact the hand keeps that contact; a hand that never touches the terrain gets its own position.
     """
     target = positions.copy()
     segments = contact_segments(contact)
     if not segments:
         return target
     switch = 0
-    for k, (seg_start, seg_end) in enumerate(segments):
-        mean = positions[seg_start:seg_end].mean(axis=0)
-        target[switch:seg_end] = mean
+    for seg_start, seg_end in segments:
+        target[switch:seg_end] = positions[seg_start:seg_end].mean(axis=0)
         switch = seg_end
-        if other is not None:
-            # hold this contact until the other foot is down (or this foot lands again)
-            limit = segments[k + 1][0] if k + 1 < len(segments) else len(contact)
-            while switch < limit and not other[switch]:
-                switch += 1
-            if switch == len(contact):
-                switch = seg_end  # the other foot never lands again: move on at lift-off
-            target[seg_end:switch] = mean
     target[switch:] = target[switch - 1]
     return target
+
+
+def footstep_sequence(
+    contact: np.ndarray, positions: np.ndarray, min_distance: float
+) -> list[tuple[int, int, np.ndarray]]:
+    """The clip's footsteps as ``(touchdown frame, foot, position)``, ordered by touchdown.
+
+    A footstep is a contact (``contact`` and ``positions`` have shape (frames, 2[, 3]), left foot first) whose mean
+    position is at least ``min_distance`` from that foot's previous footstep, or from its position at the first
+    frame; nearer contacts are the foot settling in place, not a step.
+    """
+    steps = []
+    for foot in range(2):
+        last = positions[0, foot]
+        for seg_start, seg_end in contact_segments(contact[:, foot]):
+            mean = positions[seg_start:seg_end, foot].mean(axis=0)
+            if np.linalg.norm(mean - last) >= min_distance:
+                steps.append((seg_start, foot, mean))
+                last = mean
+    return sorted(steps, key=lambda step: (step[0], step[1]))
+
+
+def footstep_targets(steps: list[tuple[int, int, np.ndarray]], start: np.ndarray, frames: int) -> dict[str, np.ndarray]:
+    """Per-frame foot targets that move one footstep at a time.
+
+    Until a footstep lands, the foot making it targets its landing position and the other foot holds its last
+    footstep (or its position at the first frame, ``start`` of shape (2, 3)). When the footstep lands, the next one
+    in the clip begins. Returns ``target`` (frames, 2, 3), ``hold`` (frames, 2; False for the stepping foot),
+    ``step_foot`` and ``step_touchdown`` (frames,; the stepping foot and its touchdown frame, -1 after the last
+    footstep), and ``step_index`` (frames,; the number of footsteps landed).
+    """
+    target = np.empty((frames, 2, 3))
+    hold = np.ones((frames, 2), dtype=bool)
+    step_foot = np.full(frames, -1, dtype=np.int64)
+    step_touchdown = np.full(frames, -1, dtype=np.int64)
+    step_index = np.zeros(frames, dtype=np.int64)
+    current = start.copy()
+    landed = 0
+    for frame in range(frames):
+        while landed < len(steps) and steps[landed][0] <= frame:
+            current[steps[landed][1]] = steps[landed][2]
+            landed += 1
+        target[frame] = current
+        step_index[frame] = landed
+        if landed < len(steps):
+            touchdown, foot, position = steps[landed]
+            target[frame, foot] = position
+            hold[frame, foot] = False
+            step_foot[frame] = foot
+            step_touchdown[frame] = touchdown
+    return {
+        "target": target,
+        "hold": hold,
+        "step_foot": step_foot,
+        "step_touchdown": step_touchdown,
+        "step_index": step_index,
+    }
 
 
 class ContactMotionLibrary:
@@ -101,10 +146,13 @@ class ContactMotionLibrary:
     from the clip's geometry: a foot is in contact when at least two corners of its foot box are within
     ``contact_margin`` of the terrain and its ankle moves slower than ``contact_speed``, a hand when its sphere is
     within ``contact_margin`` and moves slower than ``contact_speed``. Contacts and gaps shorter than
-    ``min_contact_frames`` are dropped. For each frame and :data:`CONTACT_BODIES` entry, the library stores
-    the position of its contact target (the foot's ankle roll link, or the hand sphere center; see
-    :func:`contact_targets`): a foot keeps its last contact until the other foot lands, then targets its next
-    contact. It also stores whether the body is in contact.
+    ``min_contact_frames`` are dropped.
+
+    The feet move one footstep at a time (:func:`footstep_sequence`, :func:`footstep_targets`): from the first
+    frame, the foot that steps first targets where it lands and the other foot holds its starting position; when
+    the footstep lands, the next footstep in the clip begins. For each frame the library stores each contact body's
+    target (the foot's ankle roll link, or the hand sphere center) and whether it should be planted (a holding foot,
+    or a hand in contact).
     """
 
     def __init__(
@@ -118,11 +166,12 @@ class ContactMotionLibrary:
         contact_margin: float = 0.01,
         contact_speed: float = 0.3,
         min_contact_frames: int = 3,
+        step_min_distance: float = 0.05,
     ):
         if not motion_files:
             raise ValueError("At least one motion file is required.")
         keys = ("joint_pos", "joint_vel", "root_pos", "root_quat", "root_lin_vel", "root_ang_vel", "body_pos")
-        arrays = {key: [] for key in (*keys, "target", "contact", "touchdown", "next_touchdown")}
+        arrays = {key: [] for key in (*keys, "target", "contact", "step_foot", "step_touchdown", "step_index")}
         lengths = []
         for path in motion_files:
             if not os.path.isfile(path):
@@ -158,22 +207,15 @@ class ContactMotionLibrary:
                 speed = np.linalg.norm(np.gradient(body_pos, axis=0) * fps, axis=-1)
                 touch = np.concatenate((foot_touch, hand_touch), axis=1) & (speed < contact_speed)
                 contact = np.stack([clean_contacts(touch[:, i], min_contact_frames) for i in range(4)], axis=1)
-                # a foot keeps its contact until the other foot lands; hands move on at lift-off
-                others = (contact[:, 1], contact[:, 0], None, None)
-                targets = [contact_targets(contact[:, i], body_pos[:, i], others[i]) for i in range(4)]
+                # feet: one footstep at a time from the starting pose; hands: their own contacts
+                steps = footstep_sequence(contact[:, :2], body_pos[:, :2], step_min_distance)
+                feet_plan = footstep_targets(steps, body_pos[0, :2], frames)
+                hand_targets = [contact_targets(contact[:, i], body_pos[:, i]) for i in (2, 3)]
                 arrays["body_pos"].append(body_pos)
-                arrays["target"].append(np.stack(targets, axis=1))
-                arrays["contact"].append(contact)
-                # touchdowns (a contact starting after the first frame), and each frame's next one (-1 when none)
-                touchdown = np.zeros_like(contact)
-                touchdown[1:] = contact[1:] & ~contact[:-1]
-                next_touchdown = np.full(contact.shape, -1, dtype=np.int64)
-                upcoming = np.full(4, -1, dtype=np.int64)
-                for frame in range(frames - 1, -1, -1):
-                    next_touchdown[frame] = upcoming
-                    upcoming = np.where(touchdown[frame], frame, upcoming)
-                arrays["touchdown"].append(touchdown)
-                arrays["next_touchdown"].append(next_touchdown)
+                arrays["target"].append(np.concatenate((feet_plan["target"], np.stack(hand_targets, axis=1)), axis=1))
+                arrays["contact"].append(np.concatenate((feet_plan["hold"], contact[:, 2:]), axis=1))
+                for key in ("step_foot", "step_touchdown", "step_index"):
+                    arrays[key].append(feet_plan[key])
                 lengths.append(frames)
 
         def pack(key: str, dtype=torch.float32) -> torch.Tensor:
@@ -195,13 +237,15 @@ class ContactMotionLibrary:
         self.body_pos = pack("body_pos")
         """Contact body positions [m] in the clip frame. Shape is (frames, 4, 3)."""
         self.contact_target = pack("target")
-        """Position [m] of each contact body's current or next contact, in the clip frame. Shape is (frames, 4, 3)."""
+        """Position [m] of each contact body's target, in the clip frame. Shape is (frames, 4, 3)."""
         self.in_contact = pack("contact", torch.bool)
-        """Whether each contact body is in contact. Shape is (frames, 4)."""
-        self.touchdown = pack("touchdown", torch.bool)
-        """Whether each contact body's contact starts at this frame (not a clip's first frame). Shape (frames, 4)."""
-        self.next_touchdown = pack("next_touchdown", torch.long)
-        """Clip-local frame of each contact body's next touchdown after this frame, -1 when none. Shape (frames, 4)."""
+        """Whether each contact body should be planted: a holding foot, or a hand in contact. Shape (frames, 4)."""
+        self.step_foot = pack("step_foot", torch.long)
+        """The foot (0 left, 1 right) making the current footstep, -1 after the last one. Shape is (frames,)."""
+        self.step_touchdown = pack("step_touchdown", torch.long)
+        """Clip-local touchdown frame of the current footstep, -1 after the last one. Shape is (frames,)."""
+        self.step_index = pack("step_index", torch.long)
+        """Number of footsteps landed by this frame. Shape is (frames,)."""
         self.lengths = torch.tensor(lengths, dtype=torch.long, device=device)
         self.starts = self.lengths.cumsum(0) - self.lengths
 

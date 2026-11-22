@@ -20,11 +20,12 @@ if TYPE_CHECKING:
 
 
 def upcoming_contacts_b(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
-    """For each contact body (left foot, right foot, left hand, right hand): its contact target.
+    """For each contact body (left foot, right foot, left hand, right hand): its target.
 
-    A planted body's target is its contact; a swinging body's target is its next contact, so while one foot swings
-    to its new target the planted foot keeps its own. Per body, 4 values: the target position [m] relative to the
-    root in the root yaw frame, and whether the body is in contact in the clip (0 or 1). Shape is (num_envs, 16).
+    The feet move one footstep at a time: the stepping foot's target is where its footstep lands, and the other
+    foot's target is where it should stay planted (its last footstep, or its starting position). Per body, 4
+    values: the target position [m] relative to the root in the root yaw frame, and whether the body should be
+    planted (1 for the holding foot or a hand in contact, 0 for the stepping foot). Shape is (num_envs, 16).
     """
     command: MotionContactCommand = env.command_manager.get_term(command_name)
     robot = command.robot

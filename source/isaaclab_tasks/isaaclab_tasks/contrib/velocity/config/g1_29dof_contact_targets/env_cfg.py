@@ -68,9 +68,10 @@ class G1ContactTargetCommandsCfg:
         # the clip waits (up to 1 s per touchdown) for the robot's feet to reach their contacts
         wait_for_contact=True,
         max_wait_s=1.0,
-        # 30% of episodes start from the clip's first pose, the rest from a random frame
-        random_start=True,
-        first_frame_probability=0.3,
+        # every episode starts from the clip's first pose; the foot targets then follow the clip one footstep at a time
+        random_start=False,
+        # a foot has reached its target when it is down within 8 cm of it
+        reach_radius=0.08,
     )
 
 
@@ -109,14 +110,13 @@ class G1ContactTargetRewardsCfg(G1RewardsRoughCfg):
     track_heading = None
     foot_clearance = None
 
-
     left_foot_contact_target = RewTerm(
         func=mdp.foot_contact_target_exp,
         weight=1.5,
         params={
             "command_name": "motion",
             "foot": 0,
-            "std": 0.15,
+            "std": 0.05,
             "asset_cfg": SceneEntityCfg("robot", body_names="left_ankle_roll_link"),
         },
     )
@@ -126,7 +126,7 @@ class G1ContactTargetRewardsCfg(G1RewardsRoughCfg):
         params={
             "command_name": "motion",
             "foot": 1,
-            "std": 0.15,
+            "std": 0.05,
             "asset_cfg": SceneEntityCfg("robot", body_names="right_ankle_roll_link"),
         },
     )
@@ -205,13 +205,23 @@ def _configure_play(cfg: G1ContactTargetEnvCfg, motion_files: list[str]):
     cfg.commands.motion.motion_files = motion_files
     cfg.commands.motion.motion_weights = None
     cfg.scene.terrain.terrain_generator = mdp.motion_terrain_generator(motion_files)
-    cfg.commands.motion.random_start = False
     # the clip waits as long as it takes for the robot's feet to reach their contacts
     cfg.commands.motion.max_wait_s = None
     cfg.episode_length_s = 30.0
     cfg.observations.policy.enable_corruption = False
     cfg.events.push_robot = None
-    cfg.sim.visualizer_cfgs = [NewtonGLVisualizerCfg(eye=(-6.0, -6.0, 4.0), lookat=(0.0, 0.0, 0.5))]
+    # the camera looks at env 0's clip terrain (it does not follow the robot); the sidebar's "Live Plots" section
+    # plots env 0's reward terms every step
+    cfg.sim.visualizer_cfgs = [
+        NewtonGLVisualizerCfg(
+            origin_type="env",
+            origin_env_index=0,
+            eye=(-4.0, -4.0, 3.0),
+            lookat=(0.0, 0.0, 0.5),
+            enable_live_plots=True,
+            live_plots_update_interval=1,
+        )
+    ]
     cfg.video_recorders = []
 
 

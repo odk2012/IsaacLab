@@ -50,6 +50,7 @@ class MotionContactCommand(CommandTerm):
             cfg.contact_margin,
             cfg.contact_speed,
             cfg.min_contact_frames,
+            cfg.step_min_distance,
         )
         self.num_motions = len(cfg.motion_files)
         terrain = env.scene.terrain
@@ -61,7 +62,8 @@ class MotionContactCommand(CommandTerm):
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._command = torch.zeros(self.num_envs, 3, device=self.device)
         self._wait_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
-        self._lifted = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)
+        self._lifted = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._step_index = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._air_steps = torch.zeros(self.num_envs, 2, dtype=torch.long, device=self.device)
         self.waiting = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         """Whether the clip waits for the robot's feet this step. Shape is (num_envs,)."""
@@ -99,7 +101,7 @@ class MotionContactCommand(CommandTerm):
 
     @property
     def in_contact(self) -> torch.Tensor:
-        """Whether each contact body is in contact in the clip. Shape (num_envs, 4)."""
+        """Whether each contact body should be planted (a holding foot, or a hand in contact). Shape (num_envs, 4)."""
         return self.motion.in_contact[self.frames]
 
     """
@@ -126,6 +128,7 @@ class MotionContactCommand(CommandTerm):
         self.time_steps[env_ids] = start
         self._wait_steps[env_ids] = 0
         self._lifted[env_ids] = False
+        self._step_index[env_ids] = -1
         self._air_steps[env_ids] = 0
         self.waiting[env_ids] = False
         terrain = self._env.scene.terrain
@@ -187,44 +190,37 @@ class MotionContactCommand(CommandTerm):
     def _paced_time_steps(self, following: torch.Tensor) -> torch.Tensor:
         """Advance the clip at the robot's pace (see :attr:`MotionContactCommandCfg.wait_for_contact`)."""
         motion = self.motion
-        starts = motion.starts[self.motion_ids]
-        origins = self._env.scene.env_origins[:, None, :]
-        feet = self.robot.data.body_pos_w.torch[:, self._foot_ids]
+        rows = torch.arange(self.num_envs, device=self.device)
+        frames = self.frames
         sensor = self._env.scene.sensors[self.cfg.contact_sensor_name]
         if not hasattr(self, "_sensor_foot_ids"):
             self._sensor_foot_ids = sensor.find_bodies(self.cfg.foot_body_names, preserve_order=True)[0]
         down = sensor.data.net_forces_w.torch[:, self._sensor_foot_ids].norm(dim=-1) > self.cfg.contact_force_threshold
-
-        def reached(frames: torch.Tensor) -> torch.Tensor:
-            target = motion.contact_target[frames, :2] + origins
-            return down & ((feet - target).norm(dim=-1) < self.cfg.reach_radius)
-
-        # wait: the clip does not plant a foot until the robot's foot is down on that contact
-        touchdown = motion.touchdown[starts + following, :2]
-        wait = (touchdown & ~reached(starts + following)).any(dim=-1)
+        # the current footstep: its foot, its landing target, and its touchdown frame
+        foot = motion.step_foot[frames]
+        stepping = foot >= 0
+        foot = foot.clamp_min(0)
+        touchdown = motion.step_touchdown[frames]
+        target = motion.contact_target[frames, foot] + self._env.scene.env_origins
+        position = self.robot.data.body_pos_w.torch[:, self._foot_ids][rows, foot]
+        reached = stepping & down[rows, foot] & ((position - target).norm(dim=-1) < self.cfg.reach_radius)
+        # wait: the clip does not land the footstep until the robot's foot is down on its target
+        wait = stepping & (following >= touchdown) & ~reached
         if self.cfg.max_wait_s is not None:
             wait &= self._wait_steps < round(self.cfg.max_wait_s / self._env.step_dt)
         self._wait_steps = torch.where(wait, self._wait_steps + 1, 0)
         self.waiting[:] = wait
-        paced = torch.where(wait, self.time_steps, following)
-        # move up: a swinging foot that is down on its next contact jumps the clip to that touchdown
-        frames = self.frames
-        upcoming = motion.next_touchdown[frames, :2]
-        upcoming_frames = starts[:, None] + upcoming.clamp_min(0)
-        targeting = (
-            motion.contact_target[frames, :2]
-            - motion.contact_target[upcoming_frames, torch.arange(2, device=self.device)]
-        ).norm(dim=-1) < 1.0e-6
-        # only a new touchdown counts: since the clip foot lifted off, the robot foot has been off the ground for
-        # min_air_s (so the drop after a reset and bounces do not count)
-        swinging = ~motion.in_contact[frames, :2]
-        self._air_steps = torch.where(down, 0, self._air_steps + 1)
-        lifted_now = self._air_steps >= round(self.cfg.min_air_s / self._env.step_dt)
-        self._lifted = swinging & (self._lifted | lifted_now)
-        early = (upcoming >= 0) & swinging & targeting & self._lifted & reached(frames)
-        jump = torch.where(early, upcoming, torch.full_like(upcoming, torch.iinfo(torch.long).max)).amin(dim=-1)
         self.metrics["clip_wait"][:] = wait.float()
-        return torch.where(early.any(dim=-1), torch.maximum(jump, paced), paced)
+        paced = torch.where(wait, self.time_steps, following)
+        # move up: the robot lifted the stepping foot (for min_air_s, so the drop after a reset and bounces do not
+        # count) and put it down on its target before the clip lands it, so the clip jumps to the touchdown
+        self._air_steps = torch.where(down, 0, self._air_steps + 1)
+        new_step = motion.step_index[frames] != self._step_index
+        self._step_index = motion.step_index[frames]
+        lifted_now = self._air_steps[rows, foot] >= round(self.cfg.min_air_s / self._env.step_dt)
+        self._lifted = ~new_step & self._lifted | lifted_now
+        early = reached & self._lifted & (touchdown > paced)
+        return torch.where(early, touchdown, paced)
 
     @property
     def _foot_ids(self) -> list[int]:
@@ -240,7 +236,7 @@ class MotionContactCommand(CommandTerm):
 
     def _debug_vis_callback(self, event):
         if self.robot.is_initialized:
-            # markers 0 (in contact) and 1 (upcoming) per contact body
+            # markers 0 (hold) and 1 (step) per contact body
             targets = self.contact_target_w.reshape(-1, 3)
             indices = (~self.in_contact).long().reshape(-1)
             self.target_visualizer.visualize(translations=targets, marker_indices=indices)
@@ -284,12 +280,15 @@ class MotionContactCommandCfg(CommandTermCfg):
     min_contact_frames: int = 3
     """Shortest contact and gap [frames] kept when measuring the clip's contacts."""
 
+    step_min_distance: float = 0.05
+    """Distance [m] a clip contact must be from that foot's previous footstep (or starting position) to be a step."""
+
     wait_for_contact: bool = False
     """Advance the clip at the robot's pace instead of one frame per step.
 
-    The clip does not plant a foot (so the other foot gets no new target) until the robot's foot is down within
-    :attr:`reach_radius` of that contact; and when the robot lifts a foot the clip swings (for at least
-    :attr:`min_air_s`) and puts it down within :attr:`reach_radius` of its next contact early, the clip jumps to that
+    The clip does not land the current footstep (so the next footstep does not begin) until the robot's stepping
+    foot is down within :attr:`reach_radius` of its target; and when the robot lifts the stepping foot (for at least
+    :attr:`min_air_s`) and puts it down within :attr:`reach_radius` of its target early, the clip jumps to that
     touchdown.
     """
 
@@ -311,12 +310,12 @@ class MotionContactCommandCfg(CommandTermCfg):
     target_visualizer_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/Command/contact_targets",
         markers={
-            "in_contact": sim_utils.SphereCfg(
+            "hold": sim_utils.SphereCfg(
                 radius=0.04, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.8, 0.1))
             ),
-            "upcoming": sim_utils.SphereCfg(
+            "step": sim_utils.SphereCfg(
                 radius=0.03, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.3, 0.9))
             ),
         },
     )
-    """Markers at the contact targets: green for bodies in contact, blue for upcoming contacts."""
+    """Markers at the contact targets: green for feet to hold (and hands in contact), blue for the stepping foot."""
