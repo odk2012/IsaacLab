@@ -68,6 +68,9 @@ class G1ContactTargetCommandsCfg:
         # the clip waits (up to 1 s per touchdown) for the robot's feet to reach their contacts
         wait_for_contact=True,
         max_wait_s=1.0,
+        # 30% of episodes start from the clip's first pose, the rest from a random frame
+        random_start=True,
+        first_frame_probability=0.3,
     )
 
 

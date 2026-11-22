@@ -117,6 +117,9 @@ class MotionContactCommand(CommandTerm):
             # leave start_margin_s of the clip to play
             latest = (length - 1 - int(self.cfg.start_margin_s * self.motion.fps)).clamp_min(0)
             start = (torch.rand(count, device=self.device) * (latest + 1)).long()
+            # some episodes still start from the clip's first pose
+            first = torch.rand(count, device=self.device) < self.cfg.first_frame_probability
+            start = torch.where(first, 0, start)
         else:
             start = torch.zeros_like(motion_ids)
         self.motion_ids[env_ids] = motion_ids
@@ -264,7 +267,10 @@ class MotionContactCommandCfg(CommandTermCfg):
     """Robot (and clip) bodies whose positions are the foot contact targets, left first."""
 
     random_start: bool = True
-    """Start each episode at a random clip frame; otherwise at the first frame."""
+    """Start episodes at a random clip frame (see :attr:`first_frame_probability`); otherwise at the first frame."""
+
+    first_frame_probability: float = 0.3
+    """With :attr:`random_start`, the chance that an episode still starts at the clip's first frame."""
 
     start_margin_s: float = 1.0
     """Clip time [s] left to play at the latest random start."""

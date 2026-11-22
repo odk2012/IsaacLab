@@ -23,7 +23,7 @@ only: the four training walking clips drawn uniformly, and `kimodo_ramp_seed47` 
 to `g1_29dof_rigid_contact_targets_walk_ppo`.
 
 The terrain has one column per clip, holding that clip's boxes; at reset each robot moves onto its clip's column
-and starts on the clip's pose at a random frame (the first frame in `-Play`), with ±0.05 rad joint noise. The clip
+and starts on the clip's pose: in training at the first frame in 30% of episodes (`first_frame_probability`) and otherwise at a random frame leaving at least 1 s of the clip, in `-Play` always at the first frame, with ±0.05 rad joint noise. The clip
 then plays at the robot's pace (`wait_for_contact`). It does not plant a foot, and so does not give the other foot
 its next target, until the robot's foot is down (contact force above 5 N) within 0.15 m of that contact. When the
 robot lifts a foot the clip swings (for at least 0.1 s, so the drop after a reset and bounces do not count) and puts
