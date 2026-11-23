@@ -9,6 +9,6 @@ from .command import MotionContactCommand, MotionContactCommandCfg
 from .events import reset_to_motion
 from .motion import CONTACT_BODIES, ContactMotionLibrary
 from .observations import mirror_upcoming_contacts, upcoming_contacts_b
-from .rewards import foot_contact_target_exp
+from .rewards import foot_contact_target_exp, step_foot_progress, step_foot_target_exp
 from .terminations import motion_end, root_far_from_clip
 from .terrains import motion_terrain_generator

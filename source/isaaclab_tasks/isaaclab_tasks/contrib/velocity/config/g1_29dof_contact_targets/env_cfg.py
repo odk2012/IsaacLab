@@ -7,7 +7,7 @@
 
 Each episode plays a stair or walking clip on that clip's terrain. The policy observes, besides proprioception,
 each foot's and hand's current or next contact in the clip; the rewards are the rigid task's style, gait, and
-regularization terms (no velocity tracking) plus a reward for placing the feet on the clip's foot contacts.
+regularization terms (no velocity tracking) and rewards for stepping toward and onto the clip's footsteps.
 """
 
 from pathlib import Path
@@ -100,9 +100,11 @@ class G1ContactTargetObservationsCfg:
 
 @configclass
 class G1ContactTargetRewardsCfg(G1RewardsRoughCfg):
-    """The rigid task's rough-terrain rewards without velocity tracking, and one contact target reward per foot.
+    """The rigid task's rough-terrain rewards without velocity tracking, and per-foot contact target rewards.
 
-    The gait terms that tell standing from walking read the clip's root velocity (the ``motion`` command).
+    The gait terms that tell standing from walking read the clip's root velocity (the ``motion`` command). Each foot
+    is paid for holding its target (1 on target, 0.88 at 5 cm, 0.63 at 10 cm) and, while it steps, for being near
+    its landing and for moving toward it.
     """
 
     track_lin_vel_xy = None
@@ -112,21 +114,61 @@ class G1ContactTargetRewardsCfg(G1RewardsRoughCfg):
 
     left_foot_contact_target = RewTerm(
         func=mdp.foot_contact_target_exp,
+        weight=3.0,
+        params={
+            "command_name": "motion",
+            "foot": 0,
+            "std": 0.1,
+            "coarse_std": 0.3,
+            "asset_cfg": SceneEntityCfg("robot", body_names="left_ankle_roll_link"),
+        },
+    )
+    left_foot_step_target = RewTerm(
+        func=mdp.step_foot_target_exp,
         weight=1.5,
         params={
             "command_name": "motion",
             "foot": 0,
-            "std": 0.05,
+            "std": 0.5,
+            "asset_cfg": SceneEntityCfg("robot", body_names="left_ankle_roll_link"),
+        },
+    )
+    left_foot_progress = RewTerm(
+        func=mdp.step_foot_progress,
+        weight=1.0,
+        params={
+            "command_name": "motion",
+            "foot": 0,
             "asset_cfg": SceneEntityCfg("robot", body_names="left_ankle_roll_link"),
         },
     )
     right_foot_contact_target = RewTerm(
         func=mdp.foot_contact_target_exp,
+        weight=3.0,
+        params={
+            "command_name": "motion",
+            "foot": 1,
+            "std": 0.1,
+            "coarse_std": 0.3,
+            "asset_cfg": SceneEntityCfg("robot", body_names="right_ankle_roll_link"),
+        },
+    )
+    right_foot_step_target = RewTerm(
+        func=mdp.step_foot_target_exp,
         weight=1.5,
         params={
             "command_name": "motion",
             "foot": 1,
-            "std": 0.05,
+            "std": 0.5,
+            "asset_cfg": SceneEntityCfg("robot", body_names="right_ankle_roll_link"),
+        },
+    )
+    right_foot_progress = RewTerm(
+        func=mdp.step_foot_progress,
+        weight=1.0,
+        params={
+            "command_name": "motion",
+            "foot": 1,
             "asset_cfg": SceneEntityCfg("robot", body_names="right_ankle_roll_link"),
         },
     )

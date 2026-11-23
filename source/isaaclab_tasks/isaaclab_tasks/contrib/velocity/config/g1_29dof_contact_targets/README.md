@@ -61,12 +61,19 @@ negates the lateral coordinate.
 ## Rewards
 
 The rigid task's rough-terrain rewards without `track_lin_vel_xy`, `track_ang_vel_z`, `track_heading`, and
-`foot_clearance`. The
-terms that tell standing from walking (`joint_deviation`, `feet_air_time`, `break_contact`, `no_fly`,
-`contact_impulse`, `standing_foot_motion`) read the clip's root velocity as their command.
-`left_foot_contact_target` and `right_foot_contact_target` (weight 1.5 each) pay, while that foot holds its target
-and the clip is not waiting, `exp(-|p_foot - p_target|² / 0.05²)` of that foot's ankle roll link to its own target
-(1 on the target, 0.37 at 5 cm, 0.02 at 10 cm). The curriculum is empty.
+`foot_clearance`. The terms that tell standing from walking (`joint_deviation`, `feet_air_time`, `break_contact`,
+`no_fly`, `contact_impulse`, `standing_foot_motion`) read the clip's root velocity as their command. Per foot, on its
+ankle roll link:
+
+- `left/right_foot_contact_target` (weight 3.0): while that foot holds its target and the clip is not waiting, the
+  mean of `exp(-d² / 0.1²)` and `exp(-d² / 0.3²)` of its distance `d` to the target (1 on the target, 0.88 at
+  5 cm, 0.63 at 10 cm, 0.25 at 25 cm).
+- `left/right_foot_step_target` (weight 1.5): while that foot steps, `exp(-d_xy² / 0.5²)` of its horizontal distance
+  to its landing (0.96 at 10 cm, 0.37 at 50 cm).
+- `left/right_foot_progress` (weight 1.0): while that foot steps, its horizontal speed toward its landing [m/s],
+  clipped to ±1 (negative when it moves away), and zero within 2 cm of the landing.
+
+The curriculum is empty.
 
 ## Training
 
