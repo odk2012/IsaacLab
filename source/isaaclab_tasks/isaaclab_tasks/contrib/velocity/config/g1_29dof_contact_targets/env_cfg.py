@@ -31,6 +31,7 @@ from ..g1_29dof_rigid.env_cfg import G1EventCfg, G1RewardsRoughCfg, G1Terminatio
 from ..g1_29dof_rigid.env_cfg.observation_cfg import CriticHistoryCfg, PolicyHistoryCfg, PrivilegedHistoryCfg
 from ..g1_29dof_rigid.rough_env_cfg import G1RoughEnvCfg
 from . import mdp
+from .walk_tactile_cfg import WalkTactileSceneCfg, configure_walk_tactile
 
 WALK_MOTION_DIR = Path(__file__).resolve().parent / "data" / "motion_library"
 
@@ -271,10 +272,13 @@ def _configure_play(cfg: G1ContactTargetEnvCfg, motion_files: list[str]):
 class G1ContactTargetWalkEnvCfg(G1ContactTargetEnvCfg):
     """The same task on the walking clips only (:data:`TRAIN_WALK_FILES`, drawn uniformly), without stairs."""
 
+    scene: WalkTactileSceneCfg = WalkTactileSceneCfg(num_envs=4096, env_spacing=2.5)
+
     def __post_init__(self):
         self.commands.motion.motion_files = TRAIN_WALK_FILES
         self.commands.motion.motion_weights = None
         super().__post_init__()
+        configure_walk_tactile(self)
 
 
 @configclass

@@ -26,6 +26,45 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def _make_foot_fz_logger(foot_body_names):
+    """Optionally record env 0's signed world-frame normal contact loads."""
+    import os
+
+    directory = os.environ.get("G1_FOOT_FZ_LOG_DIR")
+    if not directory:
+        return None
+
+    import csv
+    import tempfile
+    from pathlib import Path
+
+    names = list(foot_body_names)
+    left = names.index("left_ankle_roll_link")
+    right = names.index("right_ankle_roll_link")
+    folder = Path(directory).expanduser().resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    stream = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="", dir=folder,
+        prefix=f"foot-fz-env0-pid{os.getpid()}-", suffix=".csv", delete=False,
+    )
+    writer = csv.writer(stream)
+    writer.writerow(("control_step", "env_id", "left_foot_normal_fz_N", "right_foot_normal_fz_N"))
+    stream.flush()
+    print(f"FOOT_FZ_CSV: {stream.name}", flush=True)
+    last_step = None
+
+    def record(control_step, foot_forces_w):
+        nonlocal last_step
+        if control_step == last_step:
+            return
+        fz = foot_forces_w[0, :, 2].detach().cpu().tolist()
+        writer.writerow((control_step, 0, fz[left], fz[right]))
+        stream.flush()
+        last_step = control_step
+
+    return record
+
+
 class MotionContactCommand(CommandTerm):
     """A motion clip played in step with each episode; its contacts are the policy's targets.
 
@@ -38,6 +77,7 @@ class MotionContactCommand(CommandTerm):
     cfg: MotionContactCommandCfg
 
     def __init__(self, cfg: MotionContactCommandCfg, env: ManagerBasedRLEnv):
+        self._foot_fz_logger = _make_foot_fz_logger(cfg.foot_body_names)
         super().__init__(cfg, env)
         self.robot: Articulation = env.scene[cfg.asset_name]
         self.motion = ContactMotionLibrary(
@@ -195,7 +235,10 @@ class MotionContactCommand(CommandTerm):
         sensor = self._env.scene.sensors[self.cfg.contact_sensor_name]
         if not hasattr(self, "_sensor_foot_ids"):
             self._sensor_foot_ids = sensor.find_bodies(self.cfg.foot_body_names, preserve_order=True)[0]
-        down = sensor.data.net_forces_w.torch[:, self._sensor_foot_ids].norm(dim=-1) > self.cfg.contact_force_threshold
+        foot_forces_w = sensor.data.net_forces_w.torch[:, self._sensor_foot_ids]
+        down = foot_forces_w.norm(dim=-1) > self.cfg.contact_force_threshold
+        if self._foot_fz_logger is not None:
+            self._foot_fz_logger(self._env.common_step_counter, foot_forces_w)
         # the current footstep: its foot, its landing target, and its touchdown frame
         foot = motion.step_foot[frames]
         stepping = foot >= 0
